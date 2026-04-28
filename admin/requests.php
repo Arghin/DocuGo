@@ -19,10 +19,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $requestId = intval($_POST['request_id'] ?? 0);
 
     $actionMap = [
-        'approve'   => 'approved',
-        'process'   => 'processing',
-        'ready'     => 'ready',
-        'cancel'    => 'cancelled',
+        'approve'      => 'approved',
+        'process'      => 'processing',
+        'ready'        => 'ready',
+        'for_sign'     => 'for_signature',
+        'cancel'       => 'cancelled',
     ];
 
     if (isset($actionMap[$action]) && $requestId > 0) {

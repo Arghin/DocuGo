@@ -5,9 +5,10 @@
 // ── Valid status transitions ─────────────────────────────────
 const STATUS_FLOW = [
     'pending'    => ['approved', 'cancelled'],
-    'approved'   => ['processing', 'cancelled'],
+    'approved'   => ['for_signature', 'processing', 'cancelled'], // Added for_signature
+    'for_signature' => ['approved', 'processing', 'cancelled'], // Can go back to approved or forward to processing
     'processing' => ['ready', 'cancelled'],
-    'ready'      => ['paid', 'cancelled'],
+    'ready'      => ['paid', 'cancelled'], // Ready (Unpaid) -> Paid
     'paid'       => ['released'],
     'released'   => [],
     'cancelled'  => [],
@@ -76,6 +77,7 @@ function updateRequestStatus($conn, $requestId, $newStatus, $changedBy, $notes =
 function buildNotificationMessage($status, $requestId) {
     $messages = [
         'approved'   => "Your document request #$requestId has been approved and is now being processed.",
+        'for_signature' => "Your document request #$requestId requires signature/approval. Please wait for authorization.",
         'processing' => "Your document request #$requestId is now being prepared.",
         'ready'      => "Your document request #$requestId is ready for pickup. Please proceed to the Registrar's Office to pay and claim your document.",
         'paid'       => "Payment for request #$requestId has been recorded. Your document will be released shortly.",
@@ -86,13 +88,125 @@ function buildNotificationMessage($status, $requestId) {
 }
 
 // ── Send notification ────────────────────────────────────────
-function sendNotification($conn, $userId, $message) {
+function sendNotification($conn, $userId, $message, $requestId = null) {
+    // Insert notification into database
     $stmt = $conn->prepare("
         INSERT INTO notifications (user_id, message) VALUES (?, ?)
     ");
     $stmt->bind_param("is", $userId, $message);
     $stmt->execute();
     $stmt->close();
+    
+    // Send email notification for specific statuses
+    if ($requestId !== null) {
+        // Get request details
+        $reqStmt = $conn->prepare("
+            SELECT dr.*, u.email, u.first_name, u.last_name, dt.name as doc_type
+            FROM document_requests dr
+            JOIN users u ON dr.user_id = u.id
+            JOIN document_types dt ON dr.document_type_id = dt.id
+            WHERE dr.id = ?
+        ");
+        $reqStmt->bind_param("i", $requestId);
+        $reqStmt->execute();
+        $request = $reqStmt->get_result()->fetch_assoc();
+        $reqStmt->close();
+        
+        if ($request) {
+            // Send email for ready (unpaid) and released statuses
+            $status = $request['status'];
+            if (in_array($status, ['ready', 'released'])) {
+                sendEmailNotification($request, $message);
+            }
+        }
+    }
+}
+
+function sendEmailNotification($request, $message) {
+    // Import mailer functions
+    require_once __DIR__ . '/mailer.php';
+    
+    $subject = "DocuGo Notification: Request #{$request['request_code']}";
+    
+    // Customize message based on status
+    switch ($request['status']) {
+        case 'ready':
+            $stubCode = $request['stub_code'] ?? '';
+            $amountDue = number_format($request['fee'] * $request['copies'], 2);
+            $body = "
+            <div style='font-family:Arial;background:#f0f4f8;padding:20px;'>
+                <div style='max-width:520px;margin:auto;background:#fff;border-radius:10px;overflow:hidden;'>
+                    <div style='background:#1a56db;padding:20px;color:white;'>
+                        <h2 style='margin:0;'>DocuGo</h2>
+                    </div>
+                    <div style='padding:20px;'>
+                        <h3>Hi {$request['first_name']} 👋</h3>
+                        <p>Your document request #{$request['request_code']} is ready for pickup.</p>
+                        <p><strong>Document:</strong> {$request['doc_type']}</p>
+                        <p><strong>Amount Due:</strong> ₱{$amountDue}</p>
+                        <p>Please proceed to the Registrar's Office to pay and claim your document.</p>
+                        <div style='text-align:center;margin:20px 0;'>
+                            <a href='" . SITE_URL . "/student/claim_stub.php?code=" . $stubCode . "' 
+                               style='background:#1a56db;color:#fff;padding:12px 20px;
+                                      text-decoration:none;border-radius:6px;'>
+                                View Claim Stub
+                            </a>
+                        </div>
+                        <p style='font-size:12px;color:#666;'>
+                            Keep this notification for your reference.
+                        </p>
+                    </div>
+                </div>
+            </div>";
+            break;
+        case 'released':
+            $stubCode = $request['stub_code'] ?? '';
+            $body = "
+            <div style='font-family:Arial;background:#f0f4f8;padding:20px;'>
+                <div style='max-width:520px;margin:auto;background:#fff;border-radius:10px;overflow:hidden;'>
+                    <div style='background:#1a56db;padding:20px;color:white;'>
+                        <h2 style='margin:0;'>DocuGo</h2>
+                    </div>
+                    <div style='padding:20px;'>
+                        <h3>Hi {$request['first_name']} 👋</h3>
+                        <p>Your document request #{$request['request_code']} has been released!</p>
+                        <p><strong>Document:</strong> {$request['doc_type']}</p>
+                        <p><strong>Status:</strong> Successfully claimed</p>
+                        <div style='text-align:center;margin:20px 0;'>
+                            <a href='" . SITE_URL . "/student/claim_stub.php?code=" . $stubCode . "' 
+                               style='background:#1a56db;color:#fff;padding:12px 20px;
+                                      text-decoration:none;border-radius:6px;'>
+                                View Claim Stub
+                            </a>
+                        </div>
+                        <p style='font-size:12px;color:#666;'>
+                            Thank you for using DocuGo.
+                        </p>
+                    </div>
+                </div>
+            </div>";
+            break;
+        default:
+            $body = "
+            <div style='font-family:Arial;background:#f0f4f8;padding:20px;'>
+                <div style='max-width:520px;margin:auto;background:#fff;border-radius:10px;overflow:hidden;'>
+                    <div style='background:#1a56db;padding:20px;color:white;'>
+                        <h2 style='margin:0;'>DocuGo</h2>
+                    </div>
+                    <div style='padding:20px;'>
+                        <h3>Hi {$request['first_name']} 👋</h3>
+                        <p>" . nl2br($message) . "</p>
+                        <p style='font-size:12px;color:#666;'>
+                            Keep this notification for your reference.
+                        </p>
+                    </div>
+                </div>
+            </div>";
+            break;
+    }
+    
+    // Send email
+    sendWithPHPMailer($request['email'], $request['first_name'], $subject, $body);
 }
 
 // ── Generate claim stub ──────────────────────────────────────
@@ -178,11 +292,11 @@ function processPayAndRelease($conn, $requestId, $staffId, $receiptNumber, $note
     $paymentId = $conn->insert_id;
     $payStmt->close();
 
-    // 3. Update document_requests: payment_status + status
+    // 3. Update document_requests: payment_status + status (ready -> paid)
     $updStmt = $conn->prepare("
         UPDATE document_requests
         SET payment_status = 'paid',
-            status = 'released',
+            status = 'paid',
             updated_at = NOW()
         WHERE id = ?
     ");
@@ -203,21 +317,39 @@ function processPayAndRelease($conn, $requestId, $staffId, $receiptNumber, $note
     $relStmt->execute();
     $relStmt->close();
 
-    // 5. Log the action
+    // 5. Log the action for payment
     logRequestAction(
         $conn, $requestId, $staffId,
-        'ready', 'released',
+        'ready', 'paid',
         "Payment recorded. OR#: $receiptNumber. $notes"
     );
 
-    // 6. Notify student
+    // 6. Now update status from paid to released (auto-release after payment)
+    $updStmt2 = $conn->prepare("
+        UPDATE document_requests
+        SET status = 'released',
+            updated_at = NOW()
+        WHERE id = ?
+    ");
+    $updStmt2->bind_param("i", $requestId);
+    $updStmt2->execute();
+    $updStmt2->close();
+
+    // 7. Log the action for release
+    logRequestAction(
+        $conn, $requestId, $staffId,
+        'paid', 'released',
+        "Document released after payment. OR#: $receiptNumber. $notes"
+    );
+
+    // 8. Notify student
     sendNotification(
         $conn,
         $request['user_id'],
         "✅ Your document request #{$requestId} has been paid (OR#: {$receiptNumber}) and released. Thank you!"
     );
 
-    // 7. Log payment audit
+    // 9. Log payment audit
     $auditStmt = $conn->prepare("
         INSERT INTO payment_audit_logs
             (request_id, payment_id, action, performed_by, old_value, new_value, notes)
@@ -240,6 +372,7 @@ function statusBadge($status) {
     $badges = [
         'pending'    => ['bg' => '#fef3c7', 'color' => '#92400e', 'label' => 'Pending'],
         'approved'   => ['bg' => '#dbeafe', 'color' => '#1e40af', 'label' => 'Approved'],
+        'for_signature' => ['bg' => '#fffbeb', 'color' => '#d97706', 'label' => '✍ For Signature'],
         'processing' => ['bg' => '#e0f2fe', 'color' => '#0369a1', 'label' => 'Processing'],
         'ready'      => ['bg' => '#fef9c3', 'color' => '#854d0e', 'label' => '⚠ Ready (Unpaid)'],
         'paid'       => ['bg' => '#dcfce7', 'color' => '#166534', 'label' => '✓ Paid'],

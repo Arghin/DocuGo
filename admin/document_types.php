@@ -32,8 +32,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if ($chk->num_rows > 0) {
                 $error = "A document type with that name already exists.";
             } else {
-                $stmt = $conn->prepare("INSERT INTO document_types (name, description, fee, processing_days, is_active) VALUES (?, ?, ?, ?, 1)");
-                $stmt->bind_param("ssdi", $name, $description, $fee, $processing);
+$stmt = $conn->prepare("INSERT INTO document_types (name, description, fee, processing_days, requires_signature, is_active) VALUES (?, ?, ?, ?, 0, 1)");
+$stmt->bind_param("ssdi", $name, $description, $fee, $processing);
                 if ($stmt->execute()) {
                     $success = "Document type \"" . htmlspecialchars($name) . "\" added successfully.";
                 } else {
@@ -52,6 +52,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $description = trim($_POST['description'] ?? '');
         $fee         = floatval($_POST['fee'] ?? 0);
         $processing  = intval($_POST['processing_days'] ?? 1);
+        $requiresSignature = isset($_POST['requires_signature']) ? 1 : 0;
 
         if ($id <= 0 || $name === '') {
             $error = "Invalid data submitted.";
@@ -68,8 +69,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if ($chk->num_rows > 0) {
                 $error = "Another document type with that name already exists.";
             } else {
-                $stmt = $conn->prepare("UPDATE document_types SET name=?, description=?, fee=?, processing_days=? WHERE id=?");
-                $stmt->bind_param("ssdii", $name, $description, $fee, $processing, $id);
+                $stmt = $conn->prepare("UPDATE document_types SET name=?, description=?, fee=?, processing_days=?, requires_signature=? WHERE id=?");
+                $stmt->bind_param("ssdiii", $name, $description, $fee, $processing, $requiresSignature, $id);
                 if ($stmt->execute()) {
                     $success = "Document type updated successfully.";
                 } else {
@@ -80,7 +81,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $chk->close();
         }
     }
-
+    
     // TOGGLE active/inactive
     elseif (isset($_POST['action']) && $_POST['action'] === 'toggle') {
         $id = intval($_POST['doc_id'] ?? 0);
