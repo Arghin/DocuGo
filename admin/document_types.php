@@ -1,134 +1,166 @@
 <?php
+// ============================================================
+// admin/document_types.php
+// Manage document types. Includes requires_signature toggle.
+// ============================================================
 require_once '../includes/config.php';
 requireAdmin();
 
 $conn = getConnection();
 
-$success = '';
-$error   = '';
+// Get counts for sidebar badges
+$pendingReqs = $conn->query("SELECT COUNT(*) as c FROM document_requests WHERE status = 'pending'")->fetch_assoc()['c'];
+$pendingAccs = $conn->query("SELECT COUNT(*) as c FROM users WHERE status = 'pending'")->fetch_assoc()['c'];
 
-// ─── Handle POST actions ─────────────────────────────────
+$error = $success = '';
+
+// ── Handle POST ───────────────────────────────────────────
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $action = $_POST['action'] ?? '';
 
-    // ADD new document type
-    if (isset($_POST['action']) && $_POST['action'] === 'add') {
+    if ($action === 'add' || $action === 'edit') {
+        $docId       = intval($_POST['doc_id'] ?? 0);
         $name        = trim($_POST['name'] ?? '');
         $description = trim($_POST['description'] ?? '');
         $fee         = floatval($_POST['fee'] ?? 0);
-        $processing  = intval($_POST['processing_days'] ?? 1);
+        $days        = intval($_POST['processing_days'] ?? 3);
+        $reqSig      = isset($_POST['requires_signature']) ? 1 : 0;
+        $isActive    = isset($_POST['is_active']) ? 1 : 0;
 
-        if ($name === '') {
-            $error = "Document name is required.";
+        if (empty($name)) {
+            $error = 'Document name is required.';
         } elseif ($fee < 0) {
-            $error = "Fee cannot be negative.";
-        } elseif ($processing < 1) {
-            $error = "Processing days must be at least 1.";
+            $error = 'Fee cannot be negative.';
+        } elseif ($days < 1) {
+            $error = 'Processing days must be at least 1.';
         } else {
-            // Check duplicate name
-            $chk = $conn->prepare("SELECT id FROM document_types WHERE name = ?");
-            $chk->bind_param("s", $name);
-            $chk->execute();
-            $chk->store_result();
-            if ($chk->num_rows > 0) {
-                $error = "A document type with that name already exists.";
-            } else {
-$stmt = $conn->prepare("INSERT INTO document_types (name, description, fee, processing_days, requires_signature, is_active) VALUES (?, ?, ?, ?, 0, 1)");
-$stmt->bind_param("ssdi", $name, $description, $fee, $processing);
-                if ($stmt->execute()) {
-                    $success = "Document type \"" . htmlspecialchars($name) . "\" added successfully.";
+            if ($action === 'add') {
+                // Check duplicate name
+                $chk = $conn->prepare("SELECT id FROM document_types WHERE name = ?");
+                $chk->bind_param("s", $name);
+                $chk->execute();
+                $chk->store_result();
+                if ($chk->num_rows > 0) {
+                    $error = "A document type with that name already exists.";
                 } else {
-                    $error = "Failed to add document type.";
+                    $stmt = $conn->prepare("
+                        INSERT INTO document_types (name, description, fee, processing_days, requires_signature, is_active)
+                        VALUES (?, ?, ?, ?, ?, 1)
+                    ");
+                    $stmt->bind_param("ssdii", $name, $description, $fee, $days, $reqSig);
+                    if ($stmt->execute()) {
+                        $success = "Document type \"{$name}\" added successfully.";
+                    } else {
+                        $error = 'Failed to add document type.';
+                    }
+                    $stmt->close();
                 }
-                $stmt->close();
+                $chk->close();
+            } else {
+                // Check duplicate name (excluding self)
+                $chk = $conn->prepare("SELECT id FROM document_types WHERE name = ? AND id != ?");
+                $chk->bind_param("si", $name, $docId);
+                $chk->execute();
+                $chk->store_result();
+                if ($chk->num_rows > 0) {
+                    $error = "Another document type with that name already exists.";
+                } else {
+                    $stmt = $conn->prepare("
+                        UPDATE document_types
+                        SET name = ?, description = ?, fee = ?, processing_days = ?,
+                            requires_signature = ?, is_active = ?
+                        WHERE id = ?
+                    ");
+                    $stmt->bind_param("ssdiiii", $name, $description, $fee, $days, $reqSig, $isActive, $docId);
+                    if ($stmt->execute()) {
+                        $success = "Document type updated successfully.";
+                    } else {
+                        $error = 'Update failed.';
+                    }
+                    $stmt->close();
+                }
+                $chk->close();
             }
-            $chk->close();
         }
     }
 
-    // EDIT existing document type
-    elseif (isset($_POST['action']) && $_POST['action'] === 'edit') {
-        $id          = intval($_POST['doc_id'] ?? 0);
-        $name        = trim($_POST['name'] ?? '');
-        $description = trim($_POST['description'] ?? '');
-        $fee         = floatval($_POST['fee'] ?? 0);
-        $processing  = intval($_POST['processing_days'] ?? 1);
-        $requiresSignature = isset($_POST['requires_signature']) ? 1 : 0;
+    if ($action === 'delete') {
+        $docId = intval($_POST['doc_id'] ?? 0);
+        // Safety: prevent delete if requests use this type
+        $check = $conn->prepare("SELECT COUNT(*) AS c FROM document_requests WHERE document_type_id = ?");
+        $check->bind_param("i", $docId);
+        $check->execute();
+        $cnt = $check->get_result()->fetch_assoc()['c'];
+        $check->close();
 
-        if ($id <= 0 || $name === '') {
-            $error = "Invalid data submitted.";
-        } elseif ($fee < 0) {
-            $error = "Fee cannot be negative.";
-        } elseif ($processing < 1) {
-            $error = "Processing days must be at least 1.";
+        if ($cnt > 0) {
+            $error = "Cannot delete: {$cnt} request(s) reference this document type. Deactivate it instead.";
         } else {
-            // Check duplicate name (excluding self)
-            $chk = $conn->prepare("SELECT id FROM document_types WHERE name = ? AND id != ?");
-            $chk->bind_param("si", $name, $id);
-            $chk->execute();
-            $chk->store_result();
-            if ($chk->num_rows > 0) {
-                $error = "Another document type with that name already exists.";
-            } else {
-                $stmt = $conn->prepare("UPDATE document_types SET name=?, description=?, fee=?, processing_days=?, requires_signature=? WHERE id=?");
-                $stmt->bind_param("ssdiii", $name, $description, $fee, $processing, $requiresSignature, $id);
-                if ($stmt->execute()) {
-                    $success = "Document type updated successfully.";
-                } else {
-                    $error = "Failed to update document type.";
-                }
-                $stmt->close();
-            }
-            $chk->close();
-        }
-    }
-    
-    // TOGGLE active/inactive
-    elseif (isset($_POST['action']) && $_POST['action'] === 'toggle') {
-        $id = intval($_POST['doc_id'] ?? 0);
-        if ($id > 0) {
-            $stmt = $conn->prepare("UPDATE document_types SET is_active = NOT is_active WHERE id = ?");
-            $stmt->bind_param("i", $id);
-            if ($stmt->execute()) {
-                $success = "Document type status updated.";
-            } else {
-                $error = "Failed to update status.";
-            }
-            $stmt->close();
+            $del = $conn->prepare("DELETE FROM document_types WHERE id = ?");
+            $del->bind_param("i", $docId);
+            $del->execute();
+            $del->close();
+            $success = 'Document type deleted.';
         }
     }
 
-    // Redirect to avoid resubmit
-    $qs = '';
-    if ($success) $qs = '?msg=' . urlencode($success);
-    if ($error)   $qs = '?err=' . urlencode($error);
-    header("Location: document_types.php$qs");
-    exit();
+    if ($action === 'toggle_active') {
+        $docId    = intval($_POST['doc_id'] ?? 0);
+        $newState = intval($_POST['new_state'] ?? 0);
+        $stmt = $conn->prepare("UPDATE document_types SET is_active = ? WHERE id = ?");
+        $stmt->bind_param("ii", $newState, $docId);
+        $stmt->execute();
+        $stmt->close();
+        $success = $newState ? 'Document type activated.' : 'Document type deactivated.';
+    }
 }
 
-// Flash messages from redirect
-if (!empty($_GET['msg'])) $success = htmlspecialchars($_GET['msg']);
-if (!empty($_GET['err'])) $error   = htmlspecialchars($_GET['err']);
-
-// ─── Fetch all document types ────────────────────────────
+// ── Filter by status ──────────────────────────────────────
 $filterActive = $_GET['filter'] ?? 'all';
 $allowedFilters = ['all', 'active', 'inactive'];
 if (!in_array($filterActive, $allowedFilters)) $filterActive = 'all';
 
-$sql = "SELECT id, name, description, fee, processing_days, is_active, created_at FROM document_types";
-if ($filterActive === 'active')   $sql .= " WHERE is_active = 1";
-if ($filterActive === 'inactive') $sql .= " WHERE is_active = 0";
-$sql .= " ORDER BY is_active DESC, name ASC";
+// ── Fetch all document types ──────────────────────────────
+$sql = "
+    SELECT dt.*,
+           (SELECT COUNT(*) FROM document_requests dr WHERE dr.document_type_id = dt.id) AS total_requests
+    FROM document_types dt
+";
+if ($filterActive === 'active') $sql .= " WHERE dt.is_active = 1";
+if ($filterActive === 'inactive') $sql .= " WHERE dt.is_active = 0";
+$sql .= " ORDER BY dt.is_active DESC, dt.name ASC";
 
-$result = $conn->query($sql);
+$types = $conn->query($sql);
 
 // Count stats
 $countResult = $conn->query("SELECT COUNT(*) AS total, SUM(is_active) AS active_count FROM document_types");
 $counts = $countResult->fetch_assoc();
-$totalCount  = intval($counts['total']);
+$totalCount = intval($counts['total']);
 $activeCount = intval($counts['active_count']);
 $inactiveCount = $totalCount - $activeCount;
 
+// Fetch single type for edit (GET ?edit=id)
+$editDoc = null;
+if (isset($_GET['edit'])) {
+    $editId  = intval($_GET['edit']);
+    $editStmt = $conn->prepare("SELECT * FROM document_types WHERE id = ?");
+    $editStmt->bind_param("i", $editId);
+    $editStmt->execute();
+    $editDoc = $editStmt->get_result()->fetch_assoc();
+    $editStmt->close();
+}
+
+$conn->close();
+
 function e($v) { return htmlspecialchars($v ?? ''); }
+function ago($datetime) {
+    if (!$datetime) return '—';
+    $diff = time() - strtotime($datetime);
+    if ($diff < 60) return 'just now';
+    if ($diff < 3600) return floor($diff/60) . 'm ago';
+    if ($diff < 86400) return floor($diff/3600) . 'h ago';
+    return floor($diff/86400) . 'd ago';
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -136,97 +168,108 @@ function e($v) { return htmlspecialchars($v ?? ''); }
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Document Types — DocuGo Admin</title>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
     <style>
-        /* ─── Reset & Base ─────────────────────────────── */
+        /* ── Reset & Base ─────────────────────────────── */
         *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
+        :root {
+            --blue:      #1a56db;
+            --blue-dk:   #1447c0;
+            --blue-lt:   #eff6ff;
+            --green:     #059669;
+            --green-lt:  #f0fdf4;
+            --yellow:    #d97706;
+            --yellow-lt: #fffbeb;
+            --purple:    #7c3aed;
+            --purple-lt: #faf5ff;
+            --red:       #dc2626;
+            --red-lt:    #fef2f2;
+            --bg:        #f0f4f8;
+            --card:      #ffffff;
+            --border:    #e5e7eb;
+            --border-lt: #f3f4f6;
+            --text:      #111827;
+            --text-2:    #374151;
+            --text-3:    #6b7280;
+            --text-4:    #9ca3af;
+            --sidebar:   220px;
+            --shadow:    0 1px 4px rgba(0,0,0,0.06);
+            --shadow-md: 0 4px 16px rgba(0,0,0,0.08);
+        }
+
         body {
-            font-family: 'Segoe UI', Arial, sans-serif;
-            background: #f0f4f8;
-            color: #111827;
+            font-family: 'Plus Jakarta Sans', 'Segoe UI', sans-serif;
+            background: var(--bg);
+            color: var(--text);
             min-height: 100vh;
             display: flex;
             font-size: 14px;
             line-height: 1.5;
         }
 
-        /* ─── Sidebar ───────────────────────────────────── */
+        /* ── Sidebar (matching dashboard) ───────────────── */
         .sidebar {
-            width: 220px;
-            background: #1a56db;
+            width: var(--sidebar);
+            background: var(--blue);
             color: #fff;
             min-height: 100vh;
             flex-shrink: 0;
             display: flex;
             flex-direction: column;
             position: fixed;
-            top: 0; left: 0;
-            height: 100%;
+            top: 0; left: 0; height: 100%;
             z-index: 100;
+            border-right: 1px solid rgba(255,255,255,0.1);
         }
 
         .sidebar-brand {
-            padding: 1.4rem 1.2rem;
-            font-size: 1.5rem;
-            font-weight: 800;
-            border-bottom: 1px solid rgba(255,255,255,0.15);
-            letter-spacing: -0.5px;
-            line-height: 1.2;
+            padding: 1.4rem 1.2rem 1.2rem;
+            border-bottom: 1px solid rgba(255,255,255,0.07);
         }
 
-        .sidebar-brand small {
-            display: block;
-            font-size: 0.68rem;
-            font-weight: 400;
-            opacity: 0.7;
-            margin-top: 3px;
-            text-transform: uppercase;
-            letter-spacing: 0.06em;
-        }
-
-        .sidebar-menu { padding: 1rem 0; flex: 1; overflow-y: auto; }
-
-        .menu-label {
-            font-size: 0.65rem;
-            font-weight: 700;
-            text-transform: uppercase;
-            letter-spacing: 0.1em;
-            opacity: 0.5;
-            padding: 0.8rem 1.2rem 0.3rem;
-        }
-
-        .menu-item {
+        .brand-logo {
             display: flex;
             align-items: center;
             gap: 0.65rem;
-            padding: 0.6rem 1.2rem;
-            color: rgba(255,255,255,0.82);
-            text-decoration: none;
-            font-size: 0.855rem;
-            font-weight: 500;
-            transition: background 0.15s, color 0.15s;
-            border-left: 3px solid transparent;
+            margin-bottom: 0.2rem;
         }
 
-        .menu-item:hover { background: rgba(255,255,255,0.1); color: #fff; }
+        .brand-icon {
+            width: 34px; height: 34px;
+            background: var(--blue);
+            border-radius: 9px;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 1rem;
+            box-shadow: 0 2px 8px rgba(26,86,219,0.4);
+        }
 
-        .menu-item.active {
-            background: rgba(255,255,255,0.15);
+        .brand-name {
+            font-size: 1.2rem;
+            font-weight: 800;
             color: #fff;
-            border-left-color: #fff;
-            font-weight: 600;
+            letter-spacing: -0.4px;
         }
 
-        .menu-item .icon { font-size: 1rem; width: 20px; text-align: center; flex-shrink: 0; }
+        .brand-sub {
+            font-size: 0.67rem;
+            color: rgba(255,255,255,0.4);
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            font-weight: 600;
+            padding-left: 2.9rem;
+        }
+
+        .sidebar-menu { padding: 0.85rem 0; flex: 1; overflow-y: auto; }
 
         .sidebar-footer {
-            padding: 1rem 1.2rem;
+            padding: 0.9rem 1rem;
             border-top: 1px solid rgba(255,255,255,0.15);
             font-size: 0.8rem;
         }
 
         .sidebar-footer a {
-            color: rgba(255,255,255,0.82);
+            color: rgba(255,255,255,0.85);
             text-decoration: none;
             display: flex;
             align-items: center;
@@ -236,379 +279,433 @@ function e($v) { return htmlspecialchars($v ?? ''); }
 
         .sidebar-footer a:hover { color: #fff; }
 
-        /* ─── Main ──────────────────────────────────────── */
-        .main { margin-left: 220px; flex: 1; padding: 2rem; min-width: 0; }
+        .menu-section {
+            padding: 0.8rem 1rem 0.2rem;
+            font-size: 0.62rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            color: rgba(255,255,255,0.3);
+        }
 
+        .menu-item {
+            display: flex;
+            align-items: center;
+            gap: 0.7rem;
+            padding: 0.58rem 1rem;
+            margin: 1px 0.6rem;
+            border-radius: 8px;
+            color: rgba(255,255,255,0.6);
+            text-decoration: none;
+            font-size: 0.845rem;
+            font-weight: 500;
+            transition: background 0.15s, color 0.15s;
+            position: relative;
+        }
+
+        .menu-item:hover  { background: rgba(255,255,255,0.07); color: rgba(255,255,255,0.9); }
+        .menu-item.active { background: rgba(255,255,255,0.15); color: #fff; font-weight: 600; }
+        .menu-item.active::before {
+            content: '';
+            position: absolute;
+            left: -0.6rem; top: 50%;
+            transform: translateY(-50%);
+            width: 3px; height: 20px;
+            background: #fff;
+            border-radius: 0 3px 3px 0;
+        }
+
+        .menu-icon { font-size: 0.95rem; width: 18px; text-align: center; flex-shrink: 0; }
+        .menu-badge {
+            margin-left: auto;
+            background: var(--red);
+            color: #fff;
+            font-size: 0.6rem;
+            font-weight: 800;
+            padding: 1px 6px;
+            border-radius: 8px;
+            min-width: 18px;
+            text-align: center;
+        }
+        .menu-badge.yellow { background: var(--yellow); }
+
+        /* ── Main content ──────────────────────────────── */
+        .main { margin-left: var(--sidebar); flex: 1; padding: 1.8rem 2rem; min-width: 0; }
+
+        /* ── Topbar ───────────────────────────────────── */
         .topbar {
             display: flex;
             align-items: center;
             justify-content: space-between;
             margin-bottom: 1.6rem;
             gap: 1rem;
-            flex-wrap: wrap;
+        }
+        .topbar-left h1 {
+            font-size: 1.4rem;
+            font-weight: 800;
+            color: var(--text);
+            letter-spacing: -0.3px;
+        }
+        .topbar-left p {
+            font-size: 0.82rem;
+            color: var(--text-3);
+            margin-top: 1px;
+        }
+        .topbar-right {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+        .admin-info {
+            font-size: 0.85rem;
+            background: var(--card);
+            padding: 0.4rem 0.9rem;
+            border-radius: 20px;
+            border: 1px solid var(--border);
+        }
+        .topbar-date {
+            font-size: 0.78rem;
+            color: var(--text-3);
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 0.4rem 0.85rem;
         }
 
-        .topbar h1 { font-size: 1.35rem; font-weight: 700; color: #111827; }
-
-        .topbar .admin-info { font-size: 0.82rem; color: #6b7280; white-space: nowrap; }
-        .topbar .admin-info strong { color: #111827; font-weight: 600; }
-
-        /* ─── Alerts ────────────────────────────────────── */
+        /* ── Alert ────────────────────────────────────── */
         .alert {
             padding: 0.85rem 1rem;
-            border-radius: 8px;
-            margin-bottom: 1rem;
-            font-size: 0.875rem;
-            font-weight: 500;
+            border-radius: 10px;
+            margin-bottom: 1.2rem;
+            font-size: 0.85rem;
         }
-        .alert-success { background: #d1fae5; color: #065f46; border-left: 4px solid #059669; }
-        .alert-error   { background: #fee2e2; color: #991b1b; border-left: 4px solid #dc2626; }
+        .alert-success { background: #d1fae5; color: #065f46; border-left: 4px solid #10b981; }
+        .alert-error   { background: #fee2e2; color: #991b1b; border-left: 4px solid #ef4444; }
 
-        /* ─── Stats Row ─────────────────────────────────── */
+        /* ── Stats Cards ──────────────────────────────── */
         .stats-row {
             display: grid;
             grid-template-columns: repeat(3, 1fr);
             gap: 1rem;
-            margin-bottom: 1.2rem;
+            margin-bottom: 1.4rem;
         }
-
         .stat-card {
-            background: #fff;
-            border-radius: 10px;
-            padding: 1rem 1.2rem;
-            box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+            background: var(--card);
+            border-radius: 12px;
+            padding: 1rem 1.1rem;
+            box-shadow: var(--shadow);
+            border: 1px solid var(--border-lt);
             display: flex;
             align-items: center;
-            gap: 0.9rem;
+            gap: 0.75rem;
+            transition: box-shadow 0.2s, transform 0.2s;
         }
-
+        .stat-card:hover { box-shadow: var(--shadow-md); transform: translateY(-1px); }
         .stat-icon {
-            font-size: 1.6rem;
-            width: 42px;
-            height: 42px;
+            width: 48px; height: 48px;
+            border-radius: 12px;
             display: flex;
             align-items: center;
             justify-content: center;
-            border-radius: 10px;
-            flex-shrink: 0;
+            font-size: 1.4rem;
+        }
+        .stat-icon.blue   { background: var(--blue-lt); }
+        .stat-icon.green  { background: var(--green-lt); }
+        .stat-icon.red    { background: var(--red-lt); }
+        .stat-info .stat-value {
+            font-size: 1.6rem;
+            font-weight: 800;
+            color: var(--text);
+            line-height: 1;
+        }
+        .stat-info .stat-label {
+            font-size: 0.7rem;
+            color: var(--text-4);
+            font-weight: 500;
+            letter-spacing: 0.04em;
         }
 
-        .stat-icon.blue   { background: #eff6ff; }
-        .stat-icon.green  { background: #f0fdf4; }
-        .stat-icon.red    { background: #fef2f2; }
+        /* ── Layout Grid ──────────────────────────────── */
+        .layout {
+            display: grid;
+            grid-template-columns: 340px 1fr;
+            gap: 1.2rem;
+        }
 
-        .stat-label { font-size: 0.75rem; color: #6b7280; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
-        .stat-value { font-size: 1.5rem; font-weight: 800; color: #111827; line-height: 1.1; }
+        /* ── Cards ────────────────────────────────────── */
+        .card {
+            background: var(--card);
+            border-radius: 12px;
+            box-shadow: var(--shadow);
+            border: 1px solid var(--border-lt);
+            overflow: hidden;
+        }
+        .card-padded { padding: 1.2rem; }
+        .card-header {
+            padding: 0.9rem 1.2rem;
+            border-bottom: 1px solid var(--border-lt);
+            background: #fafafa;
+        }
+        .card-header h3 {
+            font-size: 0.9rem;
+            font-weight: 700;
+            color: var(--text);
+            margin: 0;
+        }
+        .card-body { padding: 1.2rem; }
 
-        /* ─── Toolbar ───────────────────────────────────── */
-        .toolbar {
-            background: #fff;
-            padding: 0.9rem 1.1rem;
-            border-radius: 10px;
-            box-shadow: 0 1px 4px rgba(0,0,0,0.06);
-            margin-bottom: 1rem;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            flex-wrap: wrap;
+        /* ── Form Styles ──────────────────────────────── */
+        .form-group { margin-bottom: 1rem; }
+        .form-group label {
+            display: block;
+            font-size: 0.75rem;
+            font-weight: 700;
+            color: var(--text-2);
+            margin-bottom: 0.3rem;
+        }
+        .form-group input[type="text"],
+        .form-group input[type="number"],
+        .form-group textarea {
+            width: 100%;
+            padding: 0.6rem 0.85rem;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            font-family: inherit;
+            font-size: 0.85rem;
+            color: var(--text);
+            outline: none;
+            transition: border-color 0.15s;
+        }
+        .form-group input:focus,
+        .form-group textarea:focus {
+            border-color: var(--blue);
+            box-shadow: 0 0 0 3px rgba(26,86,219,.08);
+        }
+        .form-group textarea { resize: vertical; min-height: 70px; }
+
+        .row-2 {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
             gap: 0.75rem;
         }
 
-        .tab-group { display: flex; gap: 0.35rem; flex-wrap: wrap; }
-
-        .tab {
-            padding: 0.35rem 0.75rem;
-            border-radius: 20px;
-            text-decoration: none;
-            background: #f1f5f9;
-            color: #475569;
-            font-size: 0.78rem;
-            font-weight: 600;
-            transition: background 0.15s, color 0.15s;
-            white-space: nowrap;
-        }
-
-        .tab:hover { background: #e2e8f0; color: #334155; }
-        .tab.active { background: #1a56db; color: #fff; }
-
-        /* ─── Card + Table ──────────────────────────────── */
-        .card {
-            background: #fff;
-            border-radius: 10px;
-            box-shadow: 0 1px 4px rgba(0,0,0,0.06);
-            overflow: hidden;
-        }
-
-        .card-header {
-            padding: 0.9rem 1.1rem;
-            border-bottom: 1px solid #f3f4f6;
+        /* Checkbox Group */
+        .checkbox-group {
             display: flex;
-            justify-content: space-between;
             align-items: center;
-            gap: 1rem;
+            gap: 0.6rem;
+            padding: 0.6rem 0.85rem;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        .checkbox-group input {
+            width: 16px;
+            height: 16px;
+            cursor: pointer;
+            flex-shrink: 0;
+        }
+        .checkbox-group .cb-label {
+            font-size: 0.85rem;
+            font-weight: 600;
+            color: var(--text-2);
+        }
+        .checkbox-group .cb-sub {
+            font-size: 0.7rem;
+            color: var(--text-4);
+            margin-top: 1px;
+        }
+        .sig-checkbox {
+            border-color: #e879f9;
+            background: #fdf4ff;
+        }
+        .sig-checkbox .cb-label { color: #86198f; }
+        .sig-checkbox .cb-sub { color: #a21caf; }
+
+        /* Buttons */
+        .btn-submit {
+            width: 100%;
+            padding: 0.7rem;
+            background: var(--blue);
+            color: #fff;
+            border: none;
+            border-radius: 8px;
+            font-family: inherit;
+            font-size: 0.85rem;
+            font-weight: 700;
+            cursor: pointer;
+            transition: background 0.15s;
+            margin-top: 0.5rem;
+        }
+        .btn-submit:hover { background: var(--blue-dk); }
+        .btn-reset {
+            width: 100%;
+            padding: 0.6rem;
+            background: var(--bg);
+            color: var(--text-2);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            font-family: inherit;
+            font-size: 0.8rem;
+            font-weight: 600;
+            cursor: pointer;
+            text-align: center;
+            text-decoration: none;
+            display: block;
+            margin-top: 0.5rem;
+        }
+        .btn-reset:hover {
+            background: var(--blue-lt);
+            border-color: var(--blue);
+            color: var(--blue);
         }
 
-        .card-header h2 { font-size: 1rem; font-weight: 700; color: #111827; }
-
-        table { width: 100%; border-collapse: collapse; font-size: 0.845rem; }
-
-        thead tr { background: #f9fafb; }
-
+        /* Table */
+        table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
         th {
             text-align: left;
-            padding: 0.75rem 1rem;
-            font-size: 0.75rem;
+            padding: 0.6rem 1rem;
+            background: #fafafa;
+            color: var(--text-4);
             font-weight: 700;
-            color: #6b7280;
+            font-size: 0.68rem;
             text-transform: uppercase;
-            letter-spacing: 0.04em;
-            border-bottom: 1px solid #e5e7eb;
-            white-space: nowrap;
+            letter-spacing: 0.06em;
+            border-bottom: 1px solid var(--border-lt);
         }
-
         td {
-            padding: 0.85rem 1rem;
-            border-bottom: 1px solid #f3f4f6;
+            padding: 0.75rem 1rem;
+            border-bottom: 1px solid var(--border-lt);
+            color: var(--text-2);
             vertical-align: middle;
-            color: #374151;
         }
-
-        tbody tr:last-child td { border-bottom: none; }
-        tbody tr:hover { background: #fafafa; }
-        tbody tr.inactive-row { opacity: 0.6; }
-
-        .doc-name { font-weight: 600; color: #111827; font-size: 0.875rem; }
-        .doc-desc { font-size: 0.775rem; color: #9ca3af; margin-top: 2px; }
-
-        .fee-value { font-weight: 700; color: #111827; font-size: 0.875rem; }
-        .fee-free  { color: #059669; }
-
-        .processing-days {
-            display: inline-flex;
-            align-items: center;
-            gap: 4px;
-            font-size: 0.82rem;
-            color: #6b7280;
-        }
+        tr:last-child td { border-bottom: none; }
+        tr:hover td { background: #fafbff; }
 
         /* Badges */
         .badge {
             display: inline-flex;
             align-items: center;
             gap: 4px;
-            padding: 3px 8px;
-            border-radius: 10px;
-            font-size: 0.72rem;
+            padding: 3px 9px;
+            border-radius: 20px;
+            font-size: 0.68rem;
             font-weight: 700;
-            white-space: nowrap;
         }
-        .badge-green  { background: #d1fae5; color: #065f46; }
-        .badge-red    { background: #fee2e2; color: #991b1b; }
+        .badge-active   { background: #d1fae5; color: #065f46; }
+        .badge-inactive { background: #fee2e2; color: #991b1b; }
+        .badge-sig      { background: #fce7f3; color: #9d174d; }
+        .badge-nosig    { background: #f3f4f6; color: #6b7280; }
 
-        .badge-green::before { content:''; width:6px; height:6px; border-radius:50%; background:#059669; }
-        .badge-red::before   { content:''; width:6px; height:6px; border-radius:50%; background:#dc2626; }
-
-        /* Buttons */
-        .btn {
-            padding: 5px 11px;
-            border: none;
-            border-radius: 6px;
-            font-size: 0.78rem;
-            cursor: pointer;
-            font-weight: 600;
-            text-decoration: none;
+        /* Action Buttons */
+        .act-btn {
             display: inline-block;
-            font-family: inherit;
-            transition: background 0.15s;
-            white-space: nowrap;
-        }
-
-        .btn-primary   { background: #1a56db; color: #fff; }
-        .btn-primary:hover { background: #1447c0; }
-        .btn-secondary { background: #f1f5f9; color: #374151; border: 1px solid #e2e8f0; }
-        .btn-secondary:hover { background: #e2e8f0; }
-        .btn-success   { background: #d1fae5; color: #065f46; }
-        .btn-success:hover { background: #a7f3d0; }
-        .btn-danger    { background: #fee2e2; color: #991b1b; }
-        .btn-danger:hover { background: #fecaca; }
-        .btn-add       { background: #1a56db; color: #fff; font-size: 0.835rem; padding: 0.5rem 1rem; }
-        .btn-add:hover { background: #1447c0; }
-
-        .action-group { display: flex; gap: 0.4rem; flex-wrap: wrap; }
-
-        /* Empty state */
-        .empty-state {
-            text-align: center;
-            padding: 3.5rem 1rem;
-            color: #9ca3af;
-        }
-        .empty-state .empty-icon { font-size: 2.5rem; margin-bottom: 0.75rem; }
-        .empty-state p { font-size: 0.9rem; font-weight: 500; }
-
-        /* ─── Modal ─────────────────────────────────────── */
-        .modal {
-            display: none;
-            position: fixed;
-            inset: 0;
-            background: rgba(0,0,0,0.45);
-            z-index: 1000;
-            align-items: center;
-            justify-content: center;
-            padding: 1rem;
-        }
-        .modal.show { display: flex; }
-
-        .modal-content {
-            background: #fff;
-            padding: 1.5rem;
-            border-radius: 12px;
-            width: 100%;
-            max-width: 460px;
-            box-shadow: 0 10px 40px rgba(0,0,0,0.15);
-            max-height: 90vh;
-            overflow-y: auto;
-        }
-
-        .modal-header {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            margin-bottom: 1.3rem;
-        }
-
-        .modal-header h3 { font-size: 1.05rem; font-weight: 700; color: #111827; }
-
-        .modal-close {
-            background: none;
-            border: none;
-            font-size: 1.1rem;
+            padding: 4px 10px;
+            border-radius: 6px;
+            font-size: 0.7rem;
+            font-weight: 600;
             cursor: pointer;
-            color: #9ca3af;
-            padding: 2px 6px;
-            border-radius: 4px;
-            transition: background 0.15s;
-            font-family: inherit;
+            border: none;
+            text-decoration: none;
+            transition: all 0.12s;
+            margin-right: 0.3rem;
         }
-        .modal-close:hover { background: #f3f4f6; color: #374151; }
+        .act-btn:hover { filter: brightness(0.95); transform: translateY(-1px); }
+        .act-edit     { background: #dbeafe; color: #1e40af; }
+        .act-toggle   { background: #fef3c7; color: #92400e; }
+        .act-activate { background: #d1fae5; color: #065f46; }
+        .act-delete   { background: #fee2e2; color: #991b1b; }
 
-        .form-group { margin-bottom: 1rem; }
-
-        .form-label {
-            display: block;
-            font-size: 0.78rem;
-            font-weight: 700;
-            color: #374151;
-            text-transform: uppercase;
-            letter-spacing: 0.04em;
-            margin-bottom: 0.35rem;
-        }
-
-        .form-label .optional {
-            font-weight: 400;
-            text-transform: none;
-            letter-spacing: 0;
-            color: #9ca3af;
-            font-size: 0.75rem;
-        }
-
-        .form-input,
-        .form-textarea {
-            width: 100%;
-            padding: 0.55rem 0.8rem;
-            border: 1px solid #d1d5db;
-            border-radius: 7px;
-            font-size: 0.875rem;
-            color: #111827;
-            background: #fff;
-            font-family: inherit;
-            transition: border-color 0.15s;
-        }
-
-        .form-input:focus,
-        .form-textarea:focus {
-            outline: none;
-            border-color: #1a56db;
-        }
-
-        .form-textarea { resize: vertical; min-height: 70px; }
-
-        .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 0.8rem; }
-
-        .form-hint { font-size: 0.75rem; color: #9ca3af; margin-top: 0.3rem; }
-
-        .modal-buttons {
-            margin-top: 1.3rem;
+        /* Toolbar */
+        .toolbar {
             display: flex;
-            gap: 0.5rem;
-            justify-content: flex-end;
-        }
-
-        /* Confirm modal */
-        .confirm-modal-content {
-            max-width: 360px;
-        }
-
-        .confirm-body {
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 0.8rem;
             margin-bottom: 1.2rem;
-            font-size: 0.875rem;
-            color: #374151;
-            line-height: 1.6;
         }
+        .tab-group {
+            display: flex;
+            gap: 0.25rem;
+            background: var(--card);
+            padding: 0.5rem;
+            border-radius: 14px;
+            border: 1px solid var(--border-lt);
+        }
+        .tab {
+            padding: 0.5rem 1rem;
+            font-size: 0.78rem;
+            font-weight: 600;
+            color: var(--text-3);
+            text-decoration: none;
+            border-radius: 8px;
+            transition: all 0.15s;
+        }
+        .tab:hover { background: var(--bg); color: var(--blue); }
+        .tab.active { background: var(--blue); color: #fff; }
 
-        .confirm-body strong { color: #111827; }
+        .empty-row td { text-align: center; padding: 2rem; color: var(--text-4); }
 
-        /* ─── Responsive ────────────────────────────────── */
+        /* Responsive */
         @media (max-width: 900px) {
-            .stats-row { grid-template-columns: 1fr 1fr; }
-        }
-
-        @media (max-width: 768px) {
-            .main { margin-left: 0; padding: 1rem; }
             .sidebar { display: none; }
+            .main { margin-left: 0; padding: 1rem; }
+            .layout { grid-template-columns: 1fr; }
+            .stats-row { grid-template-columns: repeat(2, 1fr); }
+        }
+        @media (max-width: 700px) {
             .stats-row { grid-template-columns: 1fr; }
-            .toolbar { flex-direction: column; align-items: stretch; }
-            table { display: block; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+            .row-2 { grid-template-columns: 1fr; }
         }
     </style>
 </head>
 <body>
 
-<!-- ─── Sidebar ─────────────────────────────────────────── -->
+<!-- Sidebar (identical to dashboard) -->
 <aside class="sidebar">
     <div class="sidebar-brand">
-        DocuGo
-        <small>Admin Panel</small>
+        <div class="brand-logo">
+            <div class="brand-icon">📄</div>
+            <div class="brand-name">DocuGo</div>
+        </div>
+        <div class="brand-sub">Admin Panel</div>
     </div>
     <nav class="sidebar-menu">
-        <div class="menu-label">Dashboard</div>
+        <div class="menu-section">Main</div>
         <a href="dashboard.php" class="menu-item">
-            <span class="icon">🏠</span> Dashboard
+            <span class="menu-icon">🏠</span> Dashboard
         </a>
         <a href="requests.php" class="menu-item">
-            <span class="icon">📄</span> Document Requests
+            <span class="menu-icon">📄</span> Document Requests
+            <?php if ($pendingReqs > 0): ?>
+                <span class="menu-badge yellow"><?= $pendingReqs ?></span>
+            <?php endif; ?>
         </a>
         <a href="accounts.php" class="menu-item">
-            <span class="icon">👥</span> User Accounts
+            <span class="menu-icon">👥</span> User Accounts
+            <?php if ($pendingAccs > 0): ?>
+                <span class="menu-badge"><?= $pendingAccs ?></span>
+            <?php endif; ?>
         </a>
-        <div class="menu-label">Records</div>
+        <div class="menu-section">Records</div>
         <a href="alumni.php" class="menu-item">
-            <span class="icon">🎓</span> Alumni / Graduates
+            <span class="menu-icon">🎓</span> Alumni
         </a>
         <a href="tracer.php" class="menu-item">
-            <span class="icon">📊</span> Graduate Tracer
+            <span class="menu-icon">📊</span> Graduate Tracer
         </a>
         <a href="reports.php" class="menu-item">
-            <span class="icon">📈</span> Reports
+            <span class="menu-icon">📈</span> Reports
         </a>
-
-        <div class="menu-label">Communication</div>
+        <div class="menu-section">Communication</div>
         <a href="announcements.php" class="menu-item">
-            <span class="icon">📢</span> Announcements
+            <span class="menu-icon">📢</span> Announcements
         </a>
-
-        <div class="menu-label">Settings</div>
+        <div class="menu-section">Settings</div>
         <a href="document_types.php" class="menu-item active">
-            <span class="icon">⚙️</span> Document Types
+            <span class="menu-icon">⚙️</span> Document Types
         </a>
     </nav>
     <div class="sidebar-footer">
@@ -616,49 +713,58 @@ function e($v) { return htmlspecialchars($v ?? ''); }
     </div>
 </aside>
 
-<!-- ─── Main ────────────────────────────────────────────── -->
+<!-- Main Content -->
 <main class="main">
-
+    <!-- Topbar -->
     <div class="topbar">
-        <h1>⚙️ Document Types</h1>
-        <div class="admin-info">
-            Logged in as <strong><?= e($_SESSION['user_name']) ?></strong>
+        <div class="topbar-left">
+            <h1>⚙️ Document Types</h1>
+            <p>Manage document types, fees, processing times, and signature requirements.</p>
+        </div>
+        <div class="topbar-right">
+            <div class="admin-info">
+                <strong><?= e($_SESSION['user_name']) ?></strong>
+            </div>
+            <div class="topbar-date">
+                📅 <?= date('l, F j, Y') ?>
+            </div>
         </div>
     </div>
 
+    <!-- Flash Messages -->
+    <?php if ($error): ?>
+        <div class="alert alert-error">⚠️ <?= e($error) ?></div>
+    <?php endif; ?>
     <?php if ($success): ?>
         <div class="alert alert-success">✅ <?= $success ?></div>
     <?php endif; ?>
-    <?php if ($error): ?>
-        <div class="alert alert-error">⚠️ <?= $error ?></div>
-    <?php endif; ?>
 
-    <!-- Stats -->
+    <!-- Stats Cards -->
     <div class="stats-row">
         <div class="stat-card">
             <div class="stat-icon blue">📄</div>
-            <div>
-                <div class="stat-label">Total Types</div>
+            <div class="stat-info">
                 <div class="stat-value"><?= $totalCount ?></div>
+                <div class="stat-label">Total Types</div>
             </div>
         </div>
         <div class="stat-card">
             <div class="stat-icon green">✅</div>
-            <div>
-                <div class="stat-label">Active</div>
+            <div class="stat-info">
                 <div class="stat-value"><?= $activeCount ?></div>
+                <div class="stat-label">Active</div>
             </div>
         </div>
         <div class="stat-card">
             <div class="stat-icon red">🔴</div>
-            <div>
-                <div class="stat-label">Inactive</div>
+            <div class="stat-info">
                 <div class="stat-value"><?= $inactiveCount ?></div>
+                <div class="stat-label">Inactive</div>
             </div>
         </div>
     </div>
 
-    <!-- Toolbar -->
+    <!-- Filter Tabs -->
     <div class="toolbar">
         <div class="tab-group">
             <?php
@@ -669,250 +775,168 @@ function e($v) { return htmlspecialchars($v ?? ''); }
                 <a href="?<?= $qs ?>" class="tab <?= $filterActive === $k ? 'active' : '' ?>"><?= $v ?></a>
             <?php endforeach; ?>
         </div>
-        <button class="btn btn-add" onclick="openAddModal()">➕ Add Document Type</button>
     </div>
 
-    <!-- Table Card -->
-    <div class="card">
-        <div class="card-header">
-            <h2>Document Types</h2>
-            <span style="font-size:0.8rem;color:#6b7280;"><?= $result->num_rows ?> shown</span>
-        </div>
+    <!-- Layout: Form + Table -->
+    <div class="layout">
+        <!-- Add / Edit Form Card -->
+        <div class="card">
+            <div class="card-header">
+                <h3><?= $editDoc ? '✏️ Edit Document Type' : '➕ Add New Document Type' ?></h3>
+            </div>
+            <div class="card-body">
+                <form method="POST" action="<?= $editDoc ? "document_types.php?edit={$editDoc['id']}" : 'document_types.php' ?>">
+                    <input type="hidden" name="action" value="<?= $editDoc ? 'edit' : 'add' ?>">
+                    <?php if ($editDoc): ?>
+                        <input type="hidden" name="doc_id" value="<?= $editDoc['id'] ?>">
+                    <?php endif; ?>
 
-        <table>
-            <thead>
-                <tr>
-                    <th>Document Name</th>
-                    <th>Fee</th>
-                    <th>Processing</th>
-                    <th>Status</th>
-                    <th>Added</th>
-                    <th>Actions</th>
-                </tr>
-            </thead>
-            <tbody>
-                <?php if ($result->num_rows > 0): ?>
-                    <?php while ($doc = $result->fetch_assoc()): ?>
-                        <tr class="<?= !$doc['is_active'] ? 'inactive-row' : '' ?>">
-                            <td>
-                                <div class="doc-name"><?= e($doc['name']) ?></div>
-                                <?php if (!empty($doc['description'])): ?>
-                                    <div class="doc-desc"><?= e($doc['description']) ?></div>
-                                <?php endif; ?>
-                            </td>
-                            <td>
-                                <?php if ($doc['fee'] > 0): ?>
-                                    <span class="fee-value">₱<?= number_format($doc['fee'], 2) ?></span>
-                                <?php else: ?>
-                                    <span class="fee-value fee-free">Free</span>
-                                <?php endif; ?>
-                            </td>
-                            <td>
-                                <span class="processing-days">
-                                    🕐 <?= $doc['processing_days'] ?> day<?= $doc['processing_days'] != 1 ? 's' : '' ?>
-                                </span>
-                            </td>
-                            <td>
-                                <span class="badge <?= $doc['is_active'] ? 'badge-green' : 'badge-red' ?>">
-                                    <?= $doc['is_active'] ? 'Active' : 'Inactive' ?>
-                                </span>
-                            </td>
-                            <td style="color:#6b7280;font-size:0.82rem;white-space:nowrap;">
-                                <?= date('M d, Y', strtotime($doc['created_at'])) ?>
-                            </td>
-                            <td>
-                                <div class="action-group">
-                                    <button class="btn btn-secondary"
-                                        onclick="openEditModal(<?= $doc['id'] ?>, <?= htmlspecialchars(json_encode($doc['name'])) ?>, <?= htmlspecialchars(json_encode($doc['description'] ?? '')) ?>, <?= $doc['fee'] ?>, <?= $doc['processing_days'] ?>)">
-                                        ✏️ Edit
-                                    </button>
-                                    <button class="btn <?= $doc['is_active'] ? 'btn-danger' : 'btn-success' ?>"
-                                        onclick="openToggleModal(<?= $doc['id'] ?>, <?= $doc['is_active'] ?>, <?= htmlspecialchars(json_encode($doc['name'])) ?>)">
-                                        <?= $doc['is_active'] ? '🔴 Deactivate' : '✅ Activate' ?>
-                                    </button>
-                                </div>
-                            </td>
-                        </tr>
-                    <?php endwhile; ?>
-                <?php else: ?>
-                    <tr>
-                        <td colspan="6">
-                            <div class="empty-state">
-                                <div class="empty-icon">📄</div>
-                                <p>No document types found. Add one to get started.</p>
+                    <div class="form-group">
+                        <label>Document Name <span style="color:#e11d48">*</span></label>
+                        <input type="text" name="name"
+                               placeholder="e.g. Transcript of Records"
+                               value="<?= e($editDoc['name'] ?? '') ?>" required>
+                    </div>
+
+                    <div class="form-group">
+                        <label>Description</label>
+                        <textarea name="description"
+                                  placeholder="Brief description of this document…"><?= e($editDoc['description'] ?? '') ?></textarea>
+                    </div>
+
+                    <div class="row-2">
+                        <div class="form-group">
+                            <label>Processing Fee (₱) <span style="color:#e11d48">*</span></label>
+                            <input type="number" name="fee" step="0.01" min="0"
+                                   value="<?= e($editDoc['fee'] ?? '0.00') ?>" required>
+                        </div>
+                        <div class="form-group">
+                            <label>Processing Days <span style="color:#e11d48">*</span></label>
+                            <input type="number" name="processing_days" min="1" max="365"
+                                   value="<?= e($editDoc['processing_days'] ?? '3') ?>" required>
+                        </div>
+                    </div>
+
+                    <!-- Requires Signature toggle -->
+                    <div class="form-group">
+                        <label>Signature Requirement</label>
+                        <label class="checkbox-group sig-checkbox">
+                            <input type="checkbox" name="requires_signature" value="1"
+                                   <?= ($editDoc['requires_signature'] ?? 0) ? 'checked' : '' ?>>
+                            <div>
+                                <div class="cb-label">✍️ Requires Signature</div>
+                                <div class="cb-sub">Request must go through "For Signature" status before processing</div>
                             </div>
-                        </td>
-                    </tr>
-                <?php endif; ?>
-            </tbody>
-        </table>
-    </div>
+                        </label>
+                    </div>
 
+                    <?php if ($editDoc): ?>
+                        <div class="form-group">
+                            <label>Status</label>
+                            <label class="checkbox-group">
+                                <input type="checkbox" name="is_active" value="1"
+                                       <?= $editDoc['is_active'] ? 'checked' : '' ?>>
+                                <div>
+                                    <div class="cb-label">Active</div>
+                                    <div class="cb-sub">Inactive types won't appear in the request form</div>
+                                </div>
+                            </label>
+                        </div>
+                    <?php endif; ?>
+
+                    <button type="submit" class="btn-submit">
+                        <?= $editDoc ? '💾 Save Changes' : '+ Add Document Type' ?>
+                    </button>
+
+                    <?php if ($editDoc): ?>
+                        <a href="document_types.php" class="btn-reset">
+                            ✕ Cancel Edit
+                        </a>
+                    <?php endif; ?>
+                </form>
+            </div>
+        </div>
+
+        <!-- Document Types Table -->
+        <div class="card">
+            <div class="card-header">
+                <h3>📋 All Document Types</h3>
+                <span style="font-size:0.75rem; color:var(--text-4);"><?= $types->num_rows ?> shown</span>
+            </div>
+            <div style="overflow-x: auto;">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Name</th>
+                            <th>Fee</th>
+                            <th>Days</th>
+                            <th>Signature</th>
+                            <th>Status</th>
+                            <th>Requests</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php if ($types->num_rows === 0): ?>
+                            <tr class="empty-row">
+                                <td colspan="7">No document types found. Add one to get started.</td>
+                            </tr>
+                        <?php else: ?>
+                            <?php while ($dt = $types->fetch_assoc()): ?>
+                                <tr>
+                                    <td>
+                                        <div style="font-weight:600;color:var(--text)"><?= e($dt['name']) ?></div>
+                                        <?php if ($dt['description']): ?>
+                                            <div style="font-size:0.7rem;color:var(--text-4);margin-top:2px">
+                                                <?= e(mb_strimwidth($dt['description'], 0, 50, '…')) ?>
+                                            </div>
+                                        <?php endif; ?>
+                                    </td>
+                                    <td><strong>₱<?= number_format($dt['fee'], 2) ?></strong></td>
+                                    <td><?= $dt['processing_days'] ?> day<?= $dt['processing_days'] > 1 ? 's' : '' ?></td>
+                                    <td>
+                                        <?php if ($dt['requires_signature']): ?>
+                                            <span class="badge badge-sig">✍️ Required</span>
+                                        <?php else: ?>
+                                            <span class="badge badge-nosig">Not required</span>
+                                        <?php endif; ?>
+                                    </td>
+                                    <td>
+                                        <span class="badge <?= $dt['is_active'] ? 'badge-active' : 'badge-inactive' ?>">
+                                            <?= $dt['is_active'] ? 'Active' : 'Inactive' ?>
+                                        </span>
+                                    </td>
+                                    <td><?= number_format($dt['total_requests']) ?></td>
+                                    <td style="white-space:nowrap">
+                                        <a href="document_types.php?edit=<?= $dt['id'] ?>" class="act-btn act-edit">Edit</a>
+
+                                        <form method="POST" action="document_types.php" style="display:inline">
+                                            <input type="hidden" name="action" value="toggle_active">
+                                            <input type="hidden" name="doc_id" value="<?= $dt['id'] ?>">
+                                            <input type="hidden" name="new_state" value="<?= $dt['is_active'] ? 0 : 1 ?>">
+                                            <button class="act-btn <?= $dt['is_active'] ? 'act-toggle' : 'act-activate' ?>">
+                                                <?= $dt['is_active'] ? 'Deactivate' : 'Activate' ?>
+                                            </button>
+                                        </form>
+
+                                        <?php if ($dt['total_requests'] == 0): ?>
+                                            <form method="POST" action="document_types.php" style="display:inline"
+                                                  onsubmit="return confirm('Delete this document type permanently?')">
+                                                <input type="hidden" name="action" value="delete">
+                                                <input type="hidden" name="doc_id" value="<?= $dt['id'] ?>">
+                                                <button class="act-btn act-delete">Delete</button>
+                                            </form>
+                                        <?php endif; ?>
+                                    </td>
+                                </tr>
+                            <?php endwhile; ?>
+                        <?php endif; ?>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
 </main>
-
-<!-- ─── Add Modal ────────────────────────────────────────── -->
-<div id="addModal" class="modal">
-    <div class="modal-content">
-        <div class="modal-header">
-            <h3>➕ Add Document Type</h3>
-            <button class="modal-close" onclick="closeModal('addModal')">✕</button>
-        </div>
-        <form method="POST">
-            <input type="hidden" name="action" value="add">
-
-            <div class="form-group">
-                <label class="form-label" for="add_name">Document Name</label>
-                <input type="text" id="add_name" name="name" class="form-input"
-                       placeholder="e.g. Transcript of Records" required maxlength="150">
-            </div>
-
-            <div class="form-group">
-                <label class="form-label" for="add_desc">
-                    Description <span class="optional">(optional)</span>
-                </label>
-                <textarea id="add_desc" name="description" class="form-textarea"
-                          placeholder="Brief description of this document type…" maxlength="500"></textarea>
-            </div>
-
-            <div class="form-row">
-                <div class="form-group">
-                    <label class="form-label" for="add_fee">Fee (₱)</label>
-                    <input type="number" id="add_fee" name="fee" class="form-input"
-                           value="0" min="0" step="0.01" required>
-                    <div class="form-hint">Enter 0 for free documents</div>
-                </div>
-                <div class="form-group">
-                    <label class="form-label" for="add_days">Processing Days</label>
-                    <input type="number" id="add_days" name="processing_days" class="form-input"
-                           value="3" min="1" max="90" required>
-                    <div class="form-hint">Working days to process</div>
-                </div>
-            </div>
-
-            <div class="modal-buttons">
-                <button type="button" class="btn btn-secondary" onclick="closeModal('addModal')">Cancel</button>
-                <button type="submit" class="btn btn-primary">➕ Add Document Type</button>
-            </div>
-        </form>
-    </div>
-</div>
-
-<!-- ─── Edit Modal ───────────────────────────────────────── -->
-<div id="editModal" class="modal">
-    <div class="modal-content">
-        <div class="modal-header">
-            <h3>✏️ Edit Document Type</h3>
-            <button class="modal-close" onclick="closeModal('editModal')">✕</button>
-        </div>
-        <form method="POST">
-            <input type="hidden" name="action" value="edit">
-            <input type="hidden" name="doc_id" id="edit_id">
-
-            <div class="form-group">
-                <label class="form-label" for="edit_name">Document Name</label>
-                <input type="text" id="edit_name" name="name" class="form-input" required maxlength="150">
-            </div>
-
-            <div class="form-group">
-                <label class="form-label" for="edit_desc">
-                    Description <span class="optional">(optional)</span>
-                </label>
-                <textarea id="edit_desc" name="description" class="form-textarea" maxlength="500"></textarea>
-            </div>
-
-            <div class="form-row">
-                <div class="form-group">
-                    <label class="form-label" for="edit_fee">Fee (₱)</label>
-                    <input type="number" id="edit_fee" name="fee" class="form-input" min="0" step="0.01" required>
-                </div>
-                <div class="form-group">
-                    <label class="form-label" for="edit_days">Processing Days</label>
-                    <input type="number" id="edit_days" name="processing_days" class="form-input" min="1" max="90" required>
-                </div>
-            </div>
-
-            <div class="modal-buttons">
-                <button type="button" class="btn btn-secondary" onclick="closeModal('editModal')">Cancel</button>
-                <button type="submit" class="btn btn-primary">💾 Save Changes</button>
-            </div>
-        </form>
-    </div>
-</div>
-
-<!-- ─── Toggle Confirm Modal ─────────────────────────────── -->
-<div id="toggleModal" class="modal">
-    <div class="modal-content confirm-modal-content">
-        <div class="modal-header">
-            <h3 id="toggleModalTitle">Confirm Action</h3>
-            <button class="modal-close" onclick="closeModal('toggleModal')">✕</button>
-        </div>
-        <div class="confirm-body" id="toggleModalBody"></div>
-        <form method="POST">
-            <input type="hidden" name="action" value="toggle">
-            <input type="hidden" name="doc_id" id="toggle_id">
-            <div class="modal-buttons">
-                <button type="button" class="btn btn-secondary" onclick="closeModal('toggleModal')">Cancel</button>
-                <button type="submit" class="btn btn-primary" id="toggleConfirmBtn">Confirm</button>
-            </div>
-        </form>
-    </div>
-</div>
-
-<script>
-    function openAddModal() {
-        document.getElementById('addModal').classList.add('show');
-    }
-
-    function openEditModal(id, name, description, fee, days) {
-        document.getElementById('edit_id').value          = id;
-        document.getElementById('edit_name').value        = name;
-        document.getElementById('edit_desc').value        = description;
-        document.getElementById('edit_fee').value         = fee;
-        document.getElementById('edit_days').value        = days;
-        document.getElementById('editModal').classList.add('show');
-    }
-
-    function openToggleModal(id, isActive, name) {
-        document.getElementById('toggle_id').value = id;
-        if (isActive) {
-            document.getElementById('toggleModalTitle').textContent = '🔴 Deactivate Document Type';
-            document.getElementById('toggleModalBody').innerHTML =
-                'Are you sure you want to <strong>deactivate</strong> <strong>"' + name + '"</strong>?<br><br>' +
-                'Students will no longer be able to request this document type.';
-            document.getElementById('toggleConfirmBtn').className = 'btn btn-danger';
-            document.getElementById('toggleConfirmBtn').textContent = 'Deactivate';
-        } else {
-            document.getElementById('toggleModalTitle').textContent = '✅ Activate Document Type';
-            document.getElementById('toggleModalBody').innerHTML =
-                'Are you sure you want to <strong>activate</strong> <strong>"' + name + '"</strong>?<br><br>' +
-                'Students will be able to request this document type again.';
-            document.getElementById('toggleConfirmBtn').className = 'btn btn-success';
-            document.getElementById('toggleConfirmBtn').textContent = 'Activate';
-        }
-        document.getElementById('toggleModal').classList.add('show');
-    }
-
-    function closeModal(id) {
-        document.getElementById(id).classList.remove('show');
-    }
-
-    // Backdrop click closes any modal
-    document.querySelectorAll('.modal').forEach(function(modal) {
-        modal.addEventListener('click', function(e) {
-            if (e.target === this) closeModal(this.id);
-        });
-    });
-
-    // Escape key
-    document.addEventListener('keydown', function(e) {
-        if (e.key === 'Escape') {
-            document.querySelectorAll('.modal.show').forEach(function(m) {
-                m.classList.remove('show');
-            });
-        }
-    });
-</script>
 
 </body>
 </html>
-<?php $conn->close(); ?>

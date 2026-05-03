@@ -1,7 +1,12 @@
 -- Database updates for DocuGo enhancements
 -- Run these SQL statements to update the database schema
 
--- 1. Update document_requests status enum to include new statuses
+-- 0. Add timestamp columns for status tracking
+ALTER TABLE `document_requests` 
+ADD COLUMN `approved_at` datetime NULL AFTER `updated_at`,
+ADD COLUMN `paid_at` datetime NULL AFTER `approved_at`,
+ADD COLUMN `released_at` datetime NULL AFTER `paid_at`,
+ADD COLUMN `estimated_release_date` date NULL AFTER `released_at`;
 ALTER TABLE `document_requests` 
 MODIFY COLUMN `status` enum('pending','approved','for_signature','processing','ready','paid','released','cancelled') 
 DEFAULT 'pending';

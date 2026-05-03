@@ -23,20 +23,26 @@ if (empty($stubCode)) {
 }
 
 // Fetch stub + request + user info
+// FIXED: Removed 'payment_status' from SELECT since it doesn't exist in document_requests
 $stmt = $conn->prepare("
     SELECT cs.*,
-           dr.request_code, dr.status, dr.payment_status,
+           dr.request_code, dr.status,
            dr.copies, dr.purpose, dr.release_mode,
            dr.preferred_release_date, dr.requested_at,
            dt.name AS doc_type, dt.fee, dt.processing_days,
            u.first_name, u.last_name, u.middle_name,
-           u.student_id, u.course, u.email, u.contact_number, u.role AS user_role
+           u.student_id, u.course, u.email, u.contact_number, u.role AS user_role,
+           pr.official_receipt_number, pr.amount AS paid_amount, pr.payment_date
     FROM claim_stubs cs
     JOIN document_requests dr ON cs.request_id = dr.id
     JOIN document_types dt ON dr.document_type_id = dt.id
     JOIN users u ON cs.user_id = u.id
+    LEFT JOIN payment_records pr ON dr.id = pr.request_id
     WHERE cs.stub_code = ?
 ");
+if (!$stmt) {
+    die("Database error: " . $conn->error);
+}
 $stmt->bind_param("s", $stubCode);
 $stmt->execute();
 $stub = $stmt->get_result()->fetch_assoc();
@@ -50,18 +56,28 @@ if (!$stub || (!$isAdmin && $stub['user_id'] != $userId)) {
 
 // Mark as printed
 if (!$stub['is_printed']) {
-    $conn->query("UPDATE claim_stubs SET is_printed = 1, printed_at = NOW() WHERE stub_code = '$stubCode'");
+    // Use prepared statement for security
+    $updateStmt = $conn->prepare("UPDATE claim_stubs SET is_printed = 1, printed_at = NOW() WHERE stub_code = ?");
+    if ($updateStmt) {
+        $updateStmt->bind_param("s", $stubCode);
+        $updateStmt->execute();
+        $updateStmt->close();
+    }
 }
 
-// Fetch request logs
-$logs = $conn->query("
+// Fetch request logs - Fix SQL injection vulnerability
+$logStmt = $conn->prepare("
     SELECT rl.new_status, rl.changed_at, rl.notes,
            u.first_name, u.last_name
     FROM request_logs rl
     LEFT JOIN users u ON rl.changed_by = u.id
-    WHERE rl.request_id = {$stub['request_id']}
+    WHERE rl.request_id = ?
     ORDER BY rl.changed_at ASC
 ");
+$logStmt->bind_param("i", $stub['request_id']);
+$logStmt->execute();
+$logs = $logStmt->get_result();
+$logStmt->close();
 
 $conn->close();
 
@@ -72,7 +88,8 @@ function fdt($d){ return $d ? date('M d, Y g:i A', strtotime($d)) : '—'; }
 $totalFee  = $stub['fee'] * $stub['copies'];
 $fullName  = trim($stub['first_name'] . ' ' . ($stub['middle_name'] ? $stub['middle_name'][0] . '. ' : '') . $stub['last_name']);
 $initials  = strtoupper(substr($stub['first_name'],0,1) . substr($stub['last_name'],0,1));
-$isPaid    = $stub['payment_status'] === 'paid';
+// FIXED: Use $stub['status'] to determine payment status since payment_status doesn't exist
+$isPaid    = in_array($stub['status'], ['paid', 'released']);
 $isReady   = $stub['status'] === 'ready';
 $isReleased= $stub['status'] === 'released';
 
@@ -794,7 +811,7 @@ $sc = $statusColors[$stub['status']] ?? ['bg' => '#f3f4f6', 'color' => '#374151'
                         <?= e($stub['doc_type']) ?><br>
                         ₱<?= number_format($stub['fee'], 2) ?> × <?= $stub['copies'] ?>
                         cop<?= $stub['copies'] > 1 ? 'ies' : 'y' ?><br>
-                        <?= paymentBadge($stub['payment_status']) ?>
+                        <?= paymentBadge($stub['status']) ?>
                     </div>
                 </div>
 
@@ -1006,7 +1023,6 @@ const qrPayload = JSON.stringify({
     copies: <?= intval($stub['copies']) ?>,
     fee:    "<?= number_format($totalFee, 2) ?>",
     status: "<?= e($stub['status']) ?>",
-    paid:   "<?= e($stub['payment_status']) ?>",
     system: "DocuGo-ADFC"
 });
 
