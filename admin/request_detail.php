@@ -40,6 +40,8 @@ $payStmt = $conn->prepare("
     FROM payment_records pr
     LEFT JOIN users u ON pr.processed_by = u.id
     WHERE pr.request_id = ?
+    ORDER BY pr.payment_date DESC
+    LIMIT 1
 ");
 $payStmt->bind_param("i", $requestId);
 $payStmt->execute();
@@ -79,6 +81,12 @@ $logs = $logStmt->get_result();
 $logStmt->close();
 
 $conn->close();
+
+// FIX #5: Derive $isPaid from official_receipt_number (real source of truth),
+// with status fallback — never use the dropped payment_status column.
+$isPaid = !empty($payment['official_receipt_number'])
+       || $r['status'] === 'paid'
+       || $r['status'] === 'released';
 
 function e($v)  { return htmlspecialchars($v ?? ''); }
 function fd($d) { return $d ? date('M d, Y', strtotime($d)) : '—'; }
@@ -761,7 +769,10 @@ function ago($d){
             <div class="card">
                 <div class="card-header">
                     <h2>💰 Payment Information</h2>
-                    <?= paymentBadge($r['status']) ?>
+                    <?php
+                    // FIX #5: Pass boolean $isPaid (derived above) — never pass $r['payment_status']
+                    ?>
+                    <?= paymentBadge($isPaid) ?>
                 </div>
                 <div class="card-body">
                     <?php if ($payment): ?>

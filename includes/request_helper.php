@@ -438,8 +438,15 @@ function processPayAndRelease($conn, $requestId, $staffId, $receiptNumber, $note
             return ['success' => false, 'message' => 'Only requests with status READY can be paid and released.'];
         }
 
-        if ($request['status'] === 'paid' || $request['status'] === 'released') {
-            return ['success' => false, 'message' => 'This request has already been paid.'];
+        // FIX #2: Check payment_records table — the real source of truth for payment
+        $checkPay = $conn->prepare("SELECT id FROM payment_records WHERE request_id = ? LIMIT 1");
+        $checkPay->bind_param("i", $requestId);
+        $checkPay->execute();
+        $alreadyPaid = $checkPay->get_result()->fetch_assoc();
+        $checkPay->close();
+
+        if ($alreadyPaid) {
+            return ['success' => false, 'message' => 'This request is already paid.'];
         }
 
         $amount = $request['fee'] * $request['copies'];
@@ -490,7 +497,8 @@ function processPayAndRelease($conn, $requestId, $staffId, $receiptNumber, $note
         $updStmt->execute();
         $updStmt->close();
 
-        // Generate claim stub when status becomes paid
+        // FIX #3: Removed orphaned $stubStmt->close() and stray closing brace.
+        // generateClaimStub manages its own statement lifecycle internally.
         generateClaimStub($conn, $requestId, $request['user_id'], $amount);
 
         // 4. Insert/update release_schedules
@@ -589,12 +597,12 @@ function statusBadge($status) {
 }
 
 // ── Get payment status badge ─────────────────────────────────
-function paymentBadge($status) {
-    if ($status === 'paid' || $status === 'released') {
+// FIX #1 (badge side): Now accepts a boolean $isPaid instead of a status string.
+// Callers must pass: !empty($r['official_receipt_number']) || $r['status'] === 'paid' || $r['status'] === 'released'
+function paymentBadge($isPaid) {
+    if ($isPaid) {
         return "<span style='background:#dcfce7;color:#166534;padding:2px 8px;border-radius:8px;font-size:0.72rem;font-weight:700;'>✓ Paid</span>";
-    } elseif ($status === 'ready') {
-        return "<span style='background:#fef3c7;color:#92400e;padding:2px 8px;border-radius:8px;font-size:0.72rem;font-weight:700;'>⚠ Unpaid</span>";
     }
-    return "<span style='background:#f3f4f6;color:#374151;padding:2px 8px;border-radius:8px;font-size:0.72rem;font-weight:700;'>—</span>";
+    return "<span style='background:#fef3c7;color:#92400e;padding:2px 8px;border-radius:8px;font-size:0.72rem;font-weight:700;'>⚠ Unpaid</span>";
 }
 ?>

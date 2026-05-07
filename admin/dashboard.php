@@ -18,14 +18,36 @@ $totalReqs      = $conn->query("SELECT COUNT(*) as c FROM document_requests")->f
 $pendingAccs    = $conn->query("SELECT COUNT(*) as c FROM users WHERE status = 'pending'")->fetch_assoc()['c'];
 $totalRevenue   = $conn->query("SELECT COALESCE(SUM(amount),0) as s FROM payment_records WHERE status='paid'")->fetch_assoc()['s'];
 
+// FIX #7: "Paid" request count — use payment_records as source of truth,
+// NOT payment_status = 'paid' (column is dropped).
+$paidReqs = $conn->query("
+    SELECT COUNT(DISTINCT dr.id) as c
+    FROM document_requests dr
+    WHERE EXISTS (
+        SELECT 1 FROM payment_records pr WHERE pr.request_id = dr.id
+    )
+")->fetch_assoc()['c'];
+
 // ── Latest requests ──────────────────────────────────────
+// FIX #7: Removed dr.payment_status from SELECT — column is dropped.
+// Payment state is derived from LEFT JOIN on payment_records instead.
 $latestReqs = $conn->query("
-    SELECT dr.request_code, dr.status, dr.requested_at, dr.payment_status,
+    SELECT dr.request_code, dr.status, dr.requested_at,
            u.first_name, u.last_name, u.role as user_role,
-           dt.name as doc_type, dt.fee, dr.copies
+           dt.name as doc_type, dt.fee, dr.copies,
+           pr.official_receipt_number
     FROM document_requests dr
     JOIN users u ON dr.user_id = u.id
     JOIN document_types dt ON dr.document_type_id = dt.id
+    LEFT JOIN (
+        SELECT request_id, MAX(payment_date) AS latest_payment
+        FROM payment_records
+        WHERE status = 'paid'
+        GROUP BY request_id
+    ) latest_pr ON dr.id = latest_pr.request_id
+    LEFT JOIN payment_records pr
+        ON pr.request_id = latest_pr.request_id
+        AND pr.payment_date = latest_pr.latest_payment
     ORDER BY dr.requested_at DESC
     LIMIT 6
 ");
@@ -210,7 +232,7 @@ function ago($d){
             <div class="stat-num"><?= $totalReqs ?></div>
             <div class="stat-label">Total Requests</div>
             <div class="stat-sub">
-                <?= $releasedReqs ?> released · <?= $totalReqs - $releasedReqs ?> active
+                <?= $releasedReqs ?> released · <?= $paidReqs ?> paid
             </div>
         </div>
     </div>

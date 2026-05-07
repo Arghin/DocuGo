@@ -101,6 +101,7 @@ $params[] = $perPage;
 $params[] = $offset;
 $types   .= 'ii';
 
+// FIX #4: Use subquery JOIN to prevent duplicate rows when multiple payment records exist
 $sql  = "
     SELECT dr.*, 
            u.first_name, u.last_name, u.email, u.student_id,
@@ -111,7 +112,15 @@ $sql  = "
     FROM document_requests dr
     JOIN users u  ON dr.user_id = u.id
     JOIN document_types dt ON dr.document_type_id = dt.id
-    LEFT JOIN payment_records pr ON dr.id = pr.request_id
+    LEFT JOIN (
+        SELECT request_id, MAX(payment_date) as latest_payment
+        FROM payment_records
+        WHERE status = 'paid'
+        GROUP BY request_id
+    ) latest_pr ON dr.id = latest_pr.request_id
+    LEFT JOIN payment_records pr 
+        ON pr.request_id = latest_pr.request_id 
+        AND pr.payment_date = latest_pr.latest_payment
     LEFT JOIN claim_stubs cs ON dr.id = cs.request_id
     $whereSQL
     ORDER BY dr.requested_at DESC
@@ -837,7 +846,14 @@ function ago($datetime) {
                             </td>
                             <td><span class="fee">₱<?= number_format($r['total_fee'], 2) ?></span></td>
                             <td><?= statusBadge($r['status']) ?></td>
-                            <td><?= paymentBadge($r['status']) ?></td>
+
+                            <?php /* FIX #1: Removed $r['payment_status'] — column dropped.
+                                 Now derives paid state from official_receipt_number (FIX #10 fallback included)  */ ?>
+                            <td>
+                                <?php $isPaid = !empty($r['official_receipt_number']) || $r['status'] === 'paid' || $r['status'] === 'released'; ?>
+                                <?= paymentBadge($isPaid) ?>
+                            </td>
+
                             <td>
                                 <?= fd($r['requested_at']) ?>
                                 <?php if ($r['payment_date']): ?>
@@ -969,4 +985,3 @@ document.getElementById('payModal').addEventListener('click', function(e) {
 
 </body>
 </html>
-```

@@ -23,7 +23,6 @@ if (empty($stubCode)) {
 }
 
 // Fetch stub + request + user info
-// FIXED: Removed 'payment_status' from SELECT since it doesn't exist in document_requests
 $stmt = $conn->prepare("
     SELECT cs.*,
            dr.request_code, dr.status,
@@ -37,7 +36,15 @@ $stmt = $conn->prepare("
     JOIN document_requests dr ON cs.request_id = dr.id
     JOIN document_types dt ON dr.document_type_id = dt.id
     JOIN users u ON cs.user_id = u.id
-    LEFT JOIN payment_records pr ON dr.id = pr.request_id
+    LEFT JOIN (
+        SELECT request_id, MAX(payment_date) AS latest_payment
+        FROM payment_records
+        WHERE status = 'paid'
+        GROUP BY request_id
+    ) latest_pr ON dr.id = latest_pr.request_id
+    LEFT JOIN payment_records pr
+        ON pr.request_id = latest_pr.request_id
+        AND pr.payment_date = latest_pr.latest_payment
     WHERE cs.stub_code = ?
 ");
 if (!$stmt) {
@@ -54,9 +61,15 @@ if (!$stub || (!$isAdmin && $stub['user_id'] != $userId)) {
     exit();
 }
 
+// FIX #6: Gate on status workflow — payment_status column is dropped.
+// Only paid/released requests have a valid stub to display.
+if (!in_array($stub['status'], ['paid', 'released', 'ready'])) {
+    // Still processing — allow view but show correct state (no die/redirect needed,
+    // the stub body already handles each status case below).
+}
+
 // Mark as printed
 if (!$stub['is_printed']) {
-    // Use prepared statement for security
     $updateStmt = $conn->prepare("UPDATE claim_stubs SET is_printed = 1, printed_at = NOW() WHERE stub_code = ?");
     if ($updateStmt) {
         $updateStmt->bind_param("s", $stubCode);
@@ -65,7 +78,7 @@ if (!$stub['is_printed']) {
     }
 }
 
-// Fetch request logs - Fix SQL injection vulnerability
+// Fetch request logs
 $logStmt = $conn->prepare("
     SELECT rl.new_status, rl.changed_at, rl.notes,
            u.first_name, u.last_name
@@ -88,8 +101,11 @@ function fdt($d){ return $d ? date('M d, Y g:i A', strtotime($d)) : '—'; }
 $totalFee  = $stub['fee'] * $stub['copies'];
 $fullName  = trim($stub['first_name'] . ' ' . ($stub['middle_name'] ? $stub['middle_name'][0] . '. ' : '') . $stub['last_name']);
 $initials  = strtoupper(substr($stub['first_name'],0,1) . substr($stub['last_name'],0,1));
-// FIXED: Use $stub['status'] to determine payment status since payment_status doesn't exist
-$isPaid    = in_array($stub['status'], ['paid', 'released']);
+
+// FIX #6: Derive payment state from official_receipt_number (real source of truth)
+// with status fallback — never rely on dropped payment_status column.
+$isPaid    = !empty($stub['official_receipt_number'])
+          || in_array($stub['status'], ['paid', 'released']);
 $isReady   = $stub['status'] === 'ready';
 $isReleased= $stub['status'] === 'released';
 
@@ -119,7 +135,7 @@ $sc = $statusColors[$stub['status']] ?? ['bg' => '#f3f4f6', 'color' => '#374151'
             display: flex;
         }
 
-        /* SIDEBAR — same as dashboard */
+        /* SIDEBAR */
         .sidebar {
             width: 220px;
             background: #1a56db;
@@ -226,7 +242,7 @@ $sc = $statusColors[$stub['status']] ?? ['bg' => '#f3f4f6', 'color' => '#374151'
             margin-bottom: 1rem;
         }
 
-        /* Stub header - same blue as dashboard welcome */
+        /* Stub header */
         .stub-header {
             background: #1a56db;
             color: #fff;
@@ -305,7 +321,7 @@ $sc = $statusColors[$stub['status']] ?? ['bg' => '#f3f4f6', 'color' => '#374151'
         /* Stub body */
         .stub-body { padding: 1.4rem; }
 
-        /* Info grid - 2 col */
+        /* Info grid */
         .info-grid {
             display: grid;
             grid-template-columns: 1fr 1fr;
@@ -430,7 +446,7 @@ $sc = $statusColors[$stub['status']] ?? ['bg' => '#f3f4f6', 'color' => '#374151'
         }
         .paid-banner .or-label    { font-size: 0.7rem; color: #166534; margin-bottom: 2px; }
 
-        /* Status tracker - same as my_requests.php */
+        /* Status tracker */
         .tracker-section {
             border-top: 1px solid #f3f4f6;
             padding: 1rem 1.4rem;
@@ -543,7 +559,6 @@ $sc = $statusColors[$stub['status']] ?? ['bg' => '#f3f4f6', 'color' => '#374151'
             gap: 0.5rem;
         }
 
-        /* Badge - same as dashboard */
         .badge {
             padding: 3px 8px;
             border-radius: 10px;
@@ -551,7 +566,7 @@ $sc = $statusColors[$stub['status']] ?? ['bg' => '#f3f4f6', 'color' => '#374151'
             font-weight: 600;
         }
 
-        /* ── QR Code Section ──────────────────────────── */
+        /* QR Code Section */
         .qr-section {
             border-top: 2px dashed #e5e7eb;
             padding: 1.4rem 1.6rem;
@@ -562,7 +577,6 @@ $sc = $statusColors[$stub['status']] ?? ['bg' => '#f3f4f6', 'color' => '#374151'
             flex-wrap: wrap;
         }
 
-        /* Left: QR code */
         .qr-left {
             display: flex;
             flex-direction: column;
@@ -583,7 +597,6 @@ $sc = $statusColors[$stub['status']] ?? ['bg' => '#f3f4f6', 'color' => '#374151'
             position: relative;
         }
 
-        /* DocuGo watermark corners on QR */
         .qr-box::before, .qr-box::after {
             content: '';
             position: absolute;
@@ -605,7 +618,6 @@ $sc = $statusColors[$stub['status']] ?? ['bg' => '#f3f4f6', 'color' => '#374151'
             text-align: center;
         }
 
-        /* Divider */
         .qr-divider {
             width: 1px;
             background: #e5e7eb;
@@ -613,7 +625,6 @@ $sc = $statusColors[$stub['status']] ?? ['bg' => '#f3f4f6', 'color' => '#374151'
             align-self: stretch;
         }
 
-        /* Right: info */
         .qr-right {
             flex: 1;
             min-width: 200px;
@@ -719,7 +730,7 @@ $sc = $statusColors[$stub['status']] ?? ['bg' => '#f3f4f6', 'color' => '#374151'
 </head>
 <body>
 
-<!-- SIDEBAR — consistent with dashboard -->
+<!-- SIDEBAR -->
 <aside class="sidebar">
     <div class="sidebar-brand">
         DocuGo
@@ -761,7 +772,7 @@ $sc = $statusColors[$stub['status']] ?? ['bg' => '#f3f4f6', 'color' => '#374151'
 
         <div class="stub-card">
 
-            <!-- STUB HEADER — blue like dashboard welcome -->
+            <!-- STUB HEADER -->
             <div class="stub-header">
                 <div class="stub-header-top">
                     <div>
@@ -811,7 +822,10 @@ $sc = $statusColors[$stub['status']] ?? ['bg' => '#f3f4f6', 'color' => '#374151'
                         <?= e($stub['doc_type']) ?><br>
                         ₱<?= number_format($stub['fee'], 2) ?> × <?= $stub['copies'] ?>
                         cop<?= $stub['copies'] > 1 ? 'ies' : 'y' ?><br>
-                        <?= paymentBadge($stub['status']) ?>
+                        <?php
+                        // FIX #6: Pass boolean $isPaid to paymentBadge() — not a status string
+                        ?>
+                        <?= paymentBadge($isPaid) ?>
                     </div>
                 </div>
 
@@ -907,7 +921,7 @@ $sc = $statusColors[$stub['status']] ?? ['bg' => '#f3f4f6', 'color' => '#374151'
 
             </div><!-- end stub-body -->
 
-            <!-- STATUS TRACKER — same as my_requests.php -->
+            <!-- STATUS TRACKER -->
             <?php
             $statusSteps = [
                 ['key'=>'pending',    'label'=>'Submitted'],
@@ -1010,10 +1024,10 @@ $sc = $statusColors[$stub['status']] ?? ['bg' => '#f3f4f6', 'color' => '#374151'
 
     </div><!-- end stub-wrap -->
 </main>
+
 <!-- QR Code Library -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <script>
-// Build QR payload with all relevant stub info
 const qrPayload = JSON.stringify({
     stub:   "<?= e($stub['stub_code']) ?>",
     code:   "<?= e($stub['request_code']) ?>",
@@ -1026,7 +1040,6 @@ const qrPayload = JSON.stringify({
     system: "DocuGo-ADFC"
 });
 
-// Generate QR code
 new QRCode(document.getElementById("qrcode"), {
     text:         qrPayload,
     width:        150,
