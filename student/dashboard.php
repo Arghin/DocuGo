@@ -829,8 +829,6 @@ $initial   = strtoupper(substr($user['first_name'], 0, 1));
 
         <div class="topbar-right">
 
-            <!-- Logout button -->
-            <a href="../logout.php" class="logout-btn-top" title="Logout">🚪</a>
 
             <!-- 🔔 Notification Bell -->
             <div class="notif-wrap" id="notifWrap">
@@ -909,6 +907,7 @@ $initial   = strtoupper(substr($user['first_name'], 0, 1));
                 <div class="chip-avatar"><?= $initial ?></div>
                 <strong><?= e($user['first_name'] . ' ' . $user['last_name']) ?></strong>
             </div>
+            
 
         </div>
     </div>

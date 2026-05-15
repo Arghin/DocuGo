@@ -100,8 +100,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !isset($_POST['ajax_mark_read']) &&
         }
         $checkStmt->close();
 
-        $deliveryAddr = $formData['release_mode'] === 'delivery' ? $formData['delivery_address'] : null;
-        $prefDate     = !empty($formData['preferred_release_date']) ? $formData['preferred_release_date'] : null;
+        $deliveryAddr = $formData['release_mode'] === 'delivery' ? $formData['delivery_address'] : '';
+        $prefDate     = !empty($formData['preferred_release_date']) ? $formData['preferred_release_date'] : '';
 
         $insStmt = $conn->prepare("
             INSERT INTO document_requests
@@ -110,28 +110,76 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !isset($_POST['ajax_mark_read']) &&
                  payment_status, status)
             VALUES (?,?,?,?,?,?,?,?,'unpaid','pending')
         ");
-        $insStmt->bind_param("siisissa",
-            $requestCode, $userId, $formData['document_type_id'],
-            $formData['purpose'], $formData['copies'],
-            $prefDate, $formData['release_mode'], $deliveryAddr
-        );
-
-        if ($insStmt->execute()) {
-            $newId = $conn->insert_id;
-            $insStmt->close();
-            logRequestAction($conn, $newId, $userId, null, 'pending', 'Request submitted by user.');
-
-            $admins = $conn->query("SELECT id FROM users WHERE role IN ('admin','registrar') AND status='active' LIMIT 5");
-            while ($a = $admins->fetch_assoc()) {
-                sendNotification($conn, $a['id'],
-                    "New document request {$requestCode} submitted by {$user['first_name']} {$user['last_name']}."
-                );
-            }
-            $success  = $requestCode;
-            $formData = [];
+        if (!$insStmt) {
+            $errors[] = 'Database error: ' . $conn->error;
         } else {
-            $insStmt->close();
-            $errors[] = 'Failed to submit request. Please try again.';
+            $insStmt->bind_param("siisisss",
+                $requestCode, $userId, $formData['document_type_id'],
+                $formData['purpose'], $formData['copies'],
+                $prefDate, $formData['release_mode'], $deliveryAddr
+            );
+
+            if ($insStmt->execute()) {
+                $requestId = $conn->insert_id;
+                $insStmt->close();
+
+                logRequestAction($conn, $requestId, $userId, null, 'pending', 'Request submitted by user.');
+
+                require_once '../includes/signature_helper.php';
+
+                $checkStmt = $conn->prepare("
+                    SELECT requires_signature
+                    FROM document_types
+                    WHERE id = ?
+                ");
+
+                $checkStmt->bind_param("i", $formData['document_type_id']);
+                $checkStmt->execute();
+
+                $docType = $checkStmt->get_result()->fetch_assoc();
+                $checkStmt->close();
+
+                if ($docType && $docType['requires_signature'] == 1) {
+                    $upd = $conn->prepare("
+                        UPDATE document_requests
+                        SET status = 'for_signature'
+                        WHERE id = ?
+                    ");
+
+                    $upd->bind_param("i", $requestId);
+                    $upd->execute();
+                    $upd->close();
+
+                    createSignatureWorkflow($conn, $requestId);
+
+                    $officeStaff = $conn->query("
+                        SELECT DISTINCT u.id, u.first_name, u.last_name, u.office_role
+                        FROM users u
+                        WHERE u.office_role IS NOT NULL 
+                        AND u.office_role IN ('REGISTRAR', 'LIBRARY', 'COMP_LAB', 'DEPT_HEAD')
+                        AND u.status = 'active'
+                    ");
+
+                    while ($staff = $officeStaff->fetch_assoc()) {
+                        sendNotification($conn, $staff['id'],
+                            "Signature required for document request {$requestCode} from {$user['first_name']} {$user['last_name']}. Please review and sign."
+                        );
+                    }
+                } else {
+                    $admins = $conn->query("SELECT id FROM users WHERE role IN ('admin','registrar') AND status='active' LIMIT 5");
+                    while ($a = $admins->fetch_assoc()) {
+                        sendNotification($conn, $a['id'],
+                            "New document request {$requestCode} submitted by {$user['first_name']} {$user['last_name']}."
+                        );
+                    }
+                }
+
+                $success  = $requestCode;
+                $formData = [];
+            } else {
+                $insStmt->close();
+                $errors[] = 'Failed to submit request. Please try again.';
+            }
         }
     }
 }
@@ -719,8 +767,6 @@ $initial   = strtoupper(substr($user['first_name'], 0, 1));
         <h1>📄 Request Document</h1>
         <div class="topbar-right">
 
-            <!-- Logout button -->
-            <a href="../logout.php" class="logout-btn-top" title="Logout">🚪</a>
 
             <!-- 🔔 Notification Bell -->
             <div class="notif-wrap" id="notifWrap">
@@ -777,14 +823,49 @@ $initial   = strtoupper(substr($user['first_name'], 0, 1));
                 <div class="ref-code"><?= e($success) ?></div>
             </div>
 
-            <div class="steps-flow">
-                <span class="step">✓ Submitted</span><span class="arrow">→</span>
-                <span class="step">Admin Review</span><span class="arrow">→</span>
-                <span class="step">Processing</span><span class="arrow">→</span>
-                <span class="step">Ready</span><span class="arrow">→</span>
-                <span class="step">Pay at Cashier</span><span class="arrow">→</span>
-                <span class="step">Released</span>
-            </div>
+            <?php
+// Check if the submitted document requires signature
+$checkDocSig = $conn->prepare("
+    SELECT dt.requires_signature 
+    FROM document_types dt 
+    JOIN document_requests dr ON dr.document_type_id = dt.id 
+    WHERE dr.request_code = ?
+");
+$checkDocSig->bind_param("s", $success);
+$checkDocSig->execute();
+$docSigResult = $checkDocSig->get_result()->fetch_assoc();
+$requiresSignature = $docSigResult && $docSigResult['requires_signature'] == 1;
+$checkDocSig->close();
+?>
+
+<div class="steps-flow">
+    <span class="step">✓ Submitted</span><span class="arrow">→</span>
+    <?php if ($requiresSignature): ?>
+        <span class="step">Admin Review</span><span class="arrow">→</span>
+        <span class="step">📝 Office Signatures</span><span class="arrow">→</span>
+        <span class="step">Processing</span><span class="arrow">→</span>
+        <span class="step">Ready</span><span class="arrow">→</span>
+        <span class="step">Pay at Cashier</span><span class="arrow">→</span>
+        <span class="step">Released</span>
+    <?php else: ?>
+        <span class="step">Admin Review</span><span class="arrow">→</span>
+        <span class="step">Processing</span><span class="arrow">→</span>
+        <span class="step">Ready</span><span class="arrow">→</span>
+        <span class="step">Pay at Cashier</span><span class="arrow">→</span>
+        <span class="step">Released</span>
+    <?php endif; ?>
+</div>
+
+<?php if ($requiresSignature): ?>
+<div class="notice-banner" style="text-align:left;margin-bottom:1.4rem;background:#e0f2fe;border-color:#7dd3fc;">
+    <span>📝</span>
+    <div>
+        <strong>This document requires office signatures</strong>
+        Your request will go through multiple office signatures before processing.
+        You can track the signature progress in your dashboard.
+    </div>
+</div>
+<?php endif; ?>
 
             <div class="notice-banner" style="text-align:left;margin-bottom:1.4rem;">
                 <span>💰</span>

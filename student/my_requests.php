@@ -654,9 +654,6 @@ $initial   = strtoupper(substr($user['first_name'], 0, 1));
         <div class="topbar-right">
             <a href="request_form.php" class="btn-new">➕ New Request</a>
 
-            <!-- Logout button -->
-            <a href="../logout.php" class="logout-btn-top" title="Logout">🚪</a>
-
             <!-- 🔔 Notification Bell -->
             <div class="notif-wrap" id="notifWrap">
                 <button class="notif-btn <?= $unreadCount > 0 ? 'has-unread' : '' ?>"
