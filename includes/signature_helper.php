@@ -301,199 +301,21 @@ function signOffice(
 
 /**
  * ============================================================
- * UPDATE REQUEST STATUS
+ * NOTE: updateRequestStatus() function is NOT defined here
+ * ============================================================
+ * This function is defined in request_helper.php
+ * Do NOT duplicate it here to avoid redeclaration errors
  * ============================================================
  */
-function updateRequestStatus(
-    mysqli $conn,
-    int $requestId,
-    string $newStatus,
-    int $adminId,
-    string $notes = ''
-): array {
 
-    // ========================================================
-    // FETCH REQUEST
-    // ========================================================
-
-    $stmt = $conn->prepare("
-        SELECT
-            dr.*,
-            dt.requires_signature,
-            dt.processing_days,
-            dt.name AS document_name,
-            dt.fee,
-            u.email,
-            CONCAT(u.first_name, ' ', u.last_name) AS student_name
-        FROM document_requests dr
-        JOIN document_types dt
-            ON dt.id = dr.document_type_id
-        JOIN users u
-            ON u.id = dr.user_id
-        WHERE dr.id = ?
-        LIMIT 1
-    ");
-
-    $stmt->bind_param("i", $requestId);
-
-    $stmt->execute();
-
-    $request = $stmt->get_result()->fetch_assoc();
-
-    $stmt->close();
-
-    if (!$request) {
-
-        return [
-            'success' => false,
-            'error' => 'Request not found.'
-        ];
-    }
-
-    $oldStatus = $request['status'];
-
-    $requiresSig = (bool)$request['requires_signature'];
-
-    // ========================================================
-    // VALIDATE FLOW
-    // ========================================================
-
-    if (!isValidTransition(
-        $oldStatus,
-        $newStatus,
-        $requiresSig
-    )) {
-
-        return [
-            'success' => false,
-            'error' => "Invalid status transition."
-        ];
-    }
-
-    // ========================================================
-    // CREATE SIGNATURE ROUTES
-    // ========================================================
-
-    if (
-        $newStatus === 'for_signature'
-        && $requiresSig
-    ) {
-
-        createSignatureRoutes(
-            $conn,
-            $requestId
-        );
-    }
-
-    // ========================================================
-    // CALCULATE ESTIMATED RELEASE
-    // ========================================================
-
-    $estimatedRelease = null;
-
-    if (
-        in_array(
-            $newStatus,
-            ['approved', 'processing']
-        )
-    ) {
-
-        $days = (int)$request['processing_days'];
-
-        $estimatedRelease = date(
-            'Y-m-d',
-            strtotime("+{$days} days")
-        );
-    }
-
-    // ========================================================
-    // UPDATE REQUEST
-    // ========================================================
-
-    if ($estimatedRelease) {
-
-        $update = $conn->prepare("
-            UPDATE document_requests
-            SET status = ?,
-                remarks = ?,
-                estimated_release_date = ?,
-                updated_at = NOW()
-            WHERE id = ?
-        ");
-
-        $update->bind_param(
-            "sssi",
-            $newStatus,
-            $notes,
-            $estimatedRelease,
-            $requestId
-        );
-
-    } else {
-
-        $update = $conn->prepare("
-            UPDATE document_requests
-            SET status = ?,
-                remarks = ?,
-                updated_at = NOW()
-            WHERE id = ?
-        ");
-
-        $update->bind_param(
-            "ssi",
-            $newStatus,
-            $notes,
-            $requestId
-        );
-    }
-
-    $success = $update->execute();
-
-    $update->close();
-
-    if (!$success) {
-
-        return [
-            'success' => false,
-            'error' => 'Failed to update request.'
-        ];
-    }
-
-    // ========================================================
-    // LOG
-    // ========================================================
-
-    logStatusChange(
-        $conn,
-        $requestId,
-        $adminId,
-        $oldStatus,
-        $newStatus,
-        $notes
-    );
-
-    // ========================================================
-    // NOTIFICATION
-    // ========================================================
-
-    $message = buildStatusMessage(
-        $newStatus,
-        $request['request_code'],
-        $request['document_name']
-    );
-
-    sendNotification(
-        $conn,
-        $request['user_id'],
-        $message,
-        $requestId
-    );
-
-    return [
-        'success' => true,
-        'error' => null
-    ];
-}
+/**
+ * ============================================================
+ * NOTE: statusBadge() function is NOT defined here
+ * ============================================================
+ * This function is defined in request_helper.php
+ * Do NOT duplicate it here to avoid redeclaration errors
+ * ============================================================
+ */
 
 /**
  * ============================================================
@@ -573,51 +395,148 @@ function buildStatusMessage(
 
 /**
  * ============================================================
- * STATUS BADGE
+ * GET SIGNATURE PROGRESS
  * ============================================================
  */
-function statusBadge(string $status): string
+function getSignatureProgress(mysqli $conn, int $requestId): array
 {
-    $map = [
+    $stmt = $conn->prepare("
+        SELECT 
+            so.office_name,
+            so.office_code,
+            rs.status,
+            rs.signed_at,
+            CONCAT(u.first_name, ' ', u.last_name) as signed_by_name,
+            rs.remarks
+        FROM request_signatures rs
+        JOIN signature_offices so ON so.id = rs.office_id
+        LEFT JOIN users u ON u.id = rs.signed_by
+        WHERE rs.request_id = ?
+        ORDER BY so.id ASC
+    ");
 
-        'pending' =>
-            ['#fef3c7', '#92400e', 'Pending'],
-
-        'for_signature' =>
-            ['#ede9fe', '#5b21b6', 'For Signature'],
-
-        'approved' =>
-            ['#dbeafe', '#1d4ed8', 'Approved'],
-
-        'processing' =>
-            ['#cffafe', '#155e75', 'Processing'],
-
-        'ready' =>
-            ['#dcfce7', '#166534', 'Ready'],
-
-        'paid' =>
-            ['#bbf7d0', '#166534', 'Paid'],
-
-        'released' =>
-            ['#e0e7ff', '#3730a3', 'Released'],
-
-        'cancelled' =>
-            ['#fee2e2', '#991b1b', 'Cancelled']
+    $stmt->bind_param("i", $requestId);
+    $stmt->execute();
+    $result = $stmt->get_result();
+    
+    $signatures = [];
+    $signedCount = 0;
+    $totalCount = 0;
+    
+    while ($row = $result->fetch_assoc()) {
+        $signatures[] = $row;
+        $totalCount++;
+        if ($row['status'] === 'signed') {
+            $signedCount++;
+        }
+    }
+    
+    $stmt->close();
+    
+    return [
+        'signatures' => $signatures,
+        'signed_count' => $signedCount,
+        'total_count' => $totalCount,
+        'is_complete' => ($signedCount === $totalCount && $totalCount > 0),
+        'progress_percent' => $totalCount > 0 ? round(($signedCount / $totalCount) * 100) : 0
     ];
-
-    [$bg, $color, $label] = $map[$status]
-        ?? ['#f3f4f6', '#374151', ucfirst($status)];
-
-    return "
-        <span style='
-            background: {$bg};
-            color: {$color};
-            padding: 4px 10px;
-            border-radius: 999px;
-            font-size: 12px;
-            font-weight: 700;
-        '>
-            {$label}
-        </span>
-    ";
 }
+
+/**
+ * ============================================================
+ * CHECK IF REQUEST NEEDS SIGNATURE
+ * ============================================================
+ */
+function requestNeedsSignature(mysqli $conn, int $requestId): bool
+{
+    $stmt = $conn->prepare("
+        SELECT dt.requires_signature
+        FROM document_requests dr
+        JOIN document_types dt ON dt.id = dr.document_type_id
+        WHERE dr.id = ?
+    ");
+    
+    $stmt->bind_param("i", $requestId);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+    
+    return $row ? (bool)$row['requires_signature'] : false;
+}
+
+/**
+ * ============================================================
+ * GET PENDING SIGNATURES FOR OFFICE
+ * ============================================================
+ */
+function getPendingSignaturesForOffice(mysqli $conn, int $officeId, int $limit = 10): array
+{
+    $stmt = $conn->prepare("
+        SELECT 
+            rs.id as signature_id,
+            rs.request_id,
+            dr.request_code,
+            dr.status as request_status,
+            dt.name as document_name,
+            CONCAT(u.first_name, ' ', u.last_name) as requester_name,
+            u.student_id,
+            rs.created_at
+        FROM request_signatures rs
+        JOIN document_requests dr ON dr.id = rs.request_id
+        JOIN document_types dt ON dt.id = dr.document_type_id
+        JOIN users u ON u.id = dr.user_id
+        WHERE rs.office_id = ? 
+        AND rs.status = 'pending'
+        AND dr.status = 'for_signature'
+        ORDER BY rs.created_at ASC
+        LIMIT ?
+    ");
+    
+    $stmt->bind_param("ii", $officeId, $limit);
+    $stmt->execute();
+    $result = $stmt->get_result();
+    
+    $requests = [];
+    while ($row = $result->fetch_assoc()) {
+        $requests[] = $row;
+    }
+    
+    $stmt->close();
+    return $requests;
+}
+
+/**
+ * ============================================================
+ * GET SIGNATURE HISTORY FOR REQUEST
+ * ============================================================
+ */
+function getSignatureHistory(mysqli $conn, int $requestId): array
+{
+    $stmt = $conn->prepare("
+        SELECT 
+            so.office_name,
+            rs.status,
+            rs.signed_at,
+            CONCAT(u.first_name, ' ', u.last_name) as signed_by_name,
+            rs.remarks,
+            rs.created_at as requested_at
+        FROM request_signatures rs
+        JOIN signature_offices so ON so.id = rs.office_id
+        LEFT JOIN users u ON u.id = rs.signed_by
+        WHERE rs.request_id = ?
+        ORDER BY rs.signed_at ASC, rs.created_at ASC
+    ");
+    
+    $stmt->bind_param("i", $requestId);
+    $stmt->execute();
+    $result = $stmt->get_result();
+    
+    $history = [];
+    while ($row = $result->fetch_assoc()) {
+        $history[] = $row;
+    }
+    
+    $stmt->close();
+    return $history;
+}
+?>

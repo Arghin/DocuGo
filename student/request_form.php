@@ -1,6 +1,7 @@
 <?php
 require_once '../includes/config.php';
 require_once '../includes/request_helper.php';
+require_once '../includes/signature_helper.php'; // ADDED: Required for createSignatureWorkflow()
 requireLogin();
 
 if (isAdmin()) {
@@ -23,7 +24,7 @@ $stmt->close();
 
 /* ── Active document types ──────────────────────────────── */
 $docTypes = $conn->query("
-    SELECT id, name, description, fee, processing_days
+    SELECT id, name, description, fee, processing_days, requires_signature
     FROM document_types
     WHERE is_active = 1
     ORDER BY name ASC
@@ -81,7 +82,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !isset($_POST['ajax_mark_read']) &&
     }
 
     if (empty($errors)) {
-        $dtStmt = $conn->prepare("SELECT id, fee FROM document_types WHERE id=? AND is_active=1");
+        $dtStmt = $conn->prepare("SELECT id, fee, requires_signature FROM document_types WHERE id=? AND is_active=1");
         $dtStmt->bind_param("i", $formData['document_type_id']);
         $dtStmt->execute();
         $docType = $dtStmt->get_result()->fetch_assoc();
@@ -125,8 +126,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !isset($_POST['ajax_mark_read']) &&
 
                 logRequestAction($conn, $requestId, $userId, null, 'pending', 'Request submitted by user.');
 
-                require_once '../includes/signature_helper.php';
-
+                // Get document type requirements
                 $checkStmt = $conn->prepare("
                     SELECT requires_signature
                     FROM document_types
@@ -135,41 +135,46 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !isset($_POST['ajax_mark_read']) &&
 
                 $checkStmt->bind_param("i", $formData['document_type_id']);
                 $checkStmt->execute();
-
-                $docType = $checkStmt->get_result()->fetch_assoc();
+                $docTypeInfo = $checkStmt->get_result()->fetch_assoc();
                 $checkStmt->close();
 
-                if ($docType && $docType['requires_signature'] == 1) {
+                if ($docTypeInfo && $docTypeInfo['requires_signature'] == 1) {
+                    // Update status to for_signature
                     $upd = $conn->prepare("
                         UPDATE document_requests
                         SET status = 'for_signature'
                         WHERE id = ?
                     ");
-
                     $upd->bind_param("i", $requestId);
                     $upd->execute();
                     $upd->close();
 
-                    createSignatureWorkflow($conn, $requestId);
+                    // Create signature workflow (FIXED: function exists now)
+                    if (function_exists('createSignatureWorkflow')) {
+                        createSignatureWorkflow($conn, $requestId);
+                    } else {
+                        error_log("createSignatureWorkflow function not found");
+                    }
 
+                    // Notify signatory offices
                     $officeStaff = $conn->query("
                         SELECT DISTINCT u.id, u.first_name, u.last_name, u.office_role
                         FROM users u
-                        WHERE u.office_role IS NOT NULL 
-                        AND u.office_role IN ('REGISTRAR', 'LIBRARY', 'COMP_LAB', 'DEPT_HEAD')
+                        WHERE u.role = 'signatory'
                         AND u.status = 'active'
                     ");
 
                     while ($staff = $officeStaff->fetch_assoc()) {
                         sendNotification($conn, $staff['id'],
-                            "Signature required for document request {$requestCode} from {$user['first_name']} {$user['last_name']}. Please review and sign."
+                            "✍️ Signature required for document request {$requestCode} from {$user['first_name']} {$user['last_name']}. Please review and sign."
                         );
                     }
                 } else {
+                    // Notify admins/registrar for approval
                     $admins = $conn->query("SELECT id FROM users WHERE role IN ('admin','registrar') AND status='active' LIMIT 5");
                     while ($a = $admins->fetch_assoc()) {
                         sendNotification($conn, $a['id'],
-                            "New document request {$requestCode} submitted by {$user['first_name']} {$user['last_name']}."
+                            "📄 New document request {$requestCode} submitted by {$user['first_name']} {$user['last_name']}."
                         );
                     }
                 }
@@ -182,6 +187,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !isset($_POST['ajax_mark_read']) &&
             }
         }
     }
+}
+
+// Store document types for later use (after possible connection close)
+$docTypesArray = [];
+$docTypes->data_seek(0);
+while ($dt = $docTypes->fetch_assoc()) {
+    $docTypesArray[] = $dt;
 }
 
 $conn->close();
@@ -753,10 +765,9 @@ $initial   = strtoupper(substr($user['first_name'], 0, 1));
         <div class="menu-label">Account</div>
         <a href="profile.php" class="menu-item"><span class="icon">👤</span> Profile</a>
     </nav>
-        <div class="sidebar-footer">
-            <a href="../logout.php">🚪 Logout</a>
-        </div>
-    </nav>
+    <div class="sidebar-footer">
+        <a href="../logout.php">🚪 Logout</a>
+    </div>
 </aside>
 
 <!-- ─── Main ────────────────────────────────────────────── -->
@@ -766,7 +777,6 @@ $initial   = strtoupper(substr($user['first_name'], 0, 1));
     <div class="topbar">
         <h1>📄 Request Document</h1>
         <div class="topbar-right">
-
 
             <!-- 🔔 Notification Bell -->
             <div class="notif-wrap" id="notifWrap">
@@ -824,48 +834,50 @@ $initial   = strtoupper(substr($user['first_name'], 0, 1));
             </div>
 
             <?php
-// Check if the submitted document requires signature
-$checkDocSig = $conn->prepare("
-    SELECT dt.requires_signature 
-    FROM document_types dt 
-    JOIN document_requests dr ON dr.document_type_id = dt.id 
-    WHERE dr.request_code = ?
-");
-$checkDocSig->bind_param("s", $success);
-$checkDocSig->execute();
-$docSigResult = $checkDocSig->get_result()->fetch_assoc();
-$requiresSignature = $docSigResult && $docSigResult['requires_signature'] == 1;
-$checkDocSig->close();
-?>
+            // Re-open connection for success page check (connection was closed)
+            $newConn = getConnection();
+            $checkDocSig = $newConn->prepare("
+                SELECT dt.requires_signature 
+                FROM document_types dt 
+                JOIN document_requests dr ON dr.document_type_id = dt.id 
+                WHERE dr.request_code = ?
+            ");
+            $checkDocSig->bind_param("s", $success);
+            $checkDocSig->execute();
+            $docSigResult = $checkDocSig->get_result()->fetch_assoc();
+            $requiresSignature = $docSigResult && $docSigResult['requires_signature'] == 1;
+            $checkDocSig->close();
+            $newConn->close();
+            ?>
 
-<div class="steps-flow">
-    <span class="step">✓ Submitted</span><span class="arrow">→</span>
-    <?php if ($requiresSignature): ?>
-        <span class="step">Admin Review</span><span class="arrow">→</span>
-        <span class="step">📝 Office Signatures</span><span class="arrow">→</span>
-        <span class="step">Processing</span><span class="arrow">→</span>
-        <span class="step">Ready</span><span class="arrow">→</span>
-        <span class="step">Pay at Cashier</span><span class="arrow">→</span>
-        <span class="step">Released</span>
-    <?php else: ?>
-        <span class="step">Admin Review</span><span class="arrow">→</span>
-        <span class="step">Processing</span><span class="arrow">→</span>
-        <span class="step">Ready</span><span class="arrow">→</span>
-        <span class="step">Pay at Cashier</span><span class="arrow">→</span>
-        <span class="step">Released</span>
-    <?php endif; ?>
-</div>
+            <div class="steps-flow">
+                <span class="step">✓ Submitted</span><span class="arrow">→</span>
+                <?php if ($requiresSignature): ?>
+                    <span class="step">Admin Review</span><span class="arrow">→</span>
+                    <span class="step">📝 Office Signatures</span><span class="arrow">→</span>
+                    <span class="step">Processing</span><span class="arrow">→</span>
+                    <span class="step">Ready</span><span class="arrow">→</span>
+                    <span class="step">Pay at Cashier</span><span class="arrow">→</span>
+                    <span class="step">Released</span>
+                <?php else: ?>
+                    <span class="step">Admin Review</span><span class="arrow">→</span>
+                    <span class="step">Processing</span><span class="arrow">→</span>
+                    <span class="step">Ready</span><span class="arrow">→</span>
+                    <span class="step">Pay at Cashier</span><span class="arrow">→</span>
+                    <span class="step">Released</span>
+                <?php endif; ?>
+            </div>
 
-<?php if ($requiresSignature): ?>
-<div class="notice-banner" style="text-align:left;margin-bottom:1.4rem;background:#e0f2fe;border-color:#7dd3fc;">
-    <span>📝</span>
-    <div>
-        <strong>This document requires office signatures</strong>
-        Your request will go through multiple office signatures before processing.
-        You can track the signature progress in your dashboard.
-    </div>
-</div>
-<?php endif; ?>
+            <?php if ($requiresSignature): ?>
+            <div class="notice-banner" style="text-align:left;margin-bottom:1.4rem;background:#e0f2fe;border-color:#7dd3fc;">
+                <span>📝</span>
+                <div>
+                    <strong>This document requires office signatures</strong>
+                    Your request will go through multiple office signatures before processing.
+                    You can track the signature progress in your dashboard.
+                </div>
+            </div>
+            <?php endif; ?>
 
             <div class="notice-banner" style="text-align:left;margin-bottom:1.4rem;">
                 <span>💰</span>
@@ -911,22 +923,25 @@ $checkDocSig->close();
                 </div>
                 <div class="section-body">
                     <div class="doc-grid" id="docGrid">
-                        <?php $docTypes->data_seek(0); while ($dt = $docTypes->fetch_assoc()):
+                        <?php foreach ($docTypesArray as $dt): 
                             $sel = ($formData['document_type_id'] ?? 0) == $dt['id'] ? 'selected' : '';
                         ?>
                         <div class="doc-card <?= $sel ?>"
-                             onclick="selectDoc(<?= $dt['id'] ?>, <?= $dt['fee'] ?>, '<?= e($dt['name']) ?>')"
+                             onclick="selectDoc(<?= $dt['id'] ?>, <?= $dt['fee'] ?>, '<?= e($dt['name']) ?>', <?= $dt['requires_signature'] ?>)"
                              id="doc-<?= $dt['id'] ?>">
                             <input type="radio" name="document_type_id"
                                    value="<?= $dt['id'] ?>" <?= $sel ? 'checked' : '' ?>>
                             <div class="doc-name"><?= e($dt['name']) ?></div>
                             <div class="doc-fee">₱<?= number_format($dt['fee'], 2) ?></div>
                             <div class="doc-days">⏱ ~<?= $dt['processing_days'] ?> day<?= $dt['processing_days'] != 1 ? 's' : '' ?></div>
+                            <?php if ($dt['requires_signature'] == 1): ?>
+                                <div class="doc-days" style="color:#d97706;">✍️ Requires Signatures</div>
+                            <?php endif; ?>
                             <?php if ($dt['description']): ?>
                                 <div class="doc-desc"><?= e($dt['description']) ?></div>
                             <?php endif; ?>
                         </div>
-                        <?php endwhile; ?>
+                        <?php endforeach; ?>
                     </div>
                 </div>
             </div>
@@ -1184,13 +1199,18 @@ setInterval(()=>{
 let selectedFee  = 0;
 let selectedName = '';
 
-function selectDoc(id, fee, name) {
+function selectDoc(id, fee, name, requiresSig) {
     document.querySelectorAll('.doc-card').forEach(c => c.classList.remove('selected'));
     document.getElementById('doc-' + id).classList.add('selected');
     document.querySelector('input[name="document_type_id"][value="' + id + '"]').checked = true;
     selectedFee  = fee;
     selectedName = name;
     updateFee();
+    
+    // Optional: Show signature requirement message
+    if (requiresSig === 1) {
+        console.log('This document requires office signatures');
+    }
 }
 
 function updateFee() {
@@ -1217,14 +1237,13 @@ function setMode(mode) {
 // Restore fee on validation error
 window.addEventListener('DOMContentLoaded', function () {
     <?php if (!empty($formData['document_type_id'])):
-        $docTypes->data_seek(0);
-        while ($dt = $docTypes->fetch_assoc()):
+        foreach ($docTypesArray as $dt):
             if ($dt['id'] == ($formData['document_type_id'] ?? 0)): ?>
     selectedFee  = <?= $dt['fee'] ?>;
     selectedName = '<?= e($dt['name']) ?>';
     updateFee();
             <?php break; endif;
-        endwhile;
+        endforeach;
     endif; ?>
 });
 </script>

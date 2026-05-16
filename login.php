@@ -345,7 +345,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         <p>Asian Development Foundation College</p>
     </div>
 
-    <h2>Welcome back! Please login.</h2>
+    <h2>Welcome back! My fellow ADFC.</h2>
 
     <?php if (!empty($error)): ?>
         <div class="alert-error">

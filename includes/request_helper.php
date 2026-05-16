@@ -5,8 +5,8 @@
 // ── Valid status transitions ─────────────────────────────────
 // Strict state machine: only allow valid workflow transitions
 $allowedTransitions = [
-    'pending' => ['approved'],
-    'approved' => ['for_signature','processing'],
+    'pending' => ['approved', 'for_signature'],  // FIXED: Added 'for_signature'
+    'approved' => ['for_signature', 'processing'],
     'for_signature' => ['processing'],
     'processing' => ['ready'],
     'ready' => ['paid'],
@@ -29,7 +29,7 @@ function isValidStatusTransition($currentStatus, $newStatus) {
 
 // Legacy constant for backward compatibility
 const STATUS_FLOW = [
-    'pending'    => ['approved', 'cancelled'],
+    'pending'    => ['approved', 'for_signature', 'cancelled'],  // FIXED: Added 'for_signature'
     'approved'   => ['for_signature', 'processing', 'cancelled'],
     'for_signature' => ['processing', 'cancelled'],
     'processing' => ['ready', 'cancelled'],
@@ -80,8 +80,13 @@ function updateRequestStatus($conn, $requestId, $newStatus, $changedBy, $notes =
     try {
         validateConnection($conn);
         
-        // Get current status
-        $stmt = $conn->prepare("SELECT status FROM document_requests WHERE id = ?");
+        // Get current status and document type info
+        $stmt = $conn->prepare("
+            SELECT dr.*, dt.requires_signature, dt.processing_days 
+            FROM document_requests dr 
+            JOIN document_types dt ON dr.document_type_id = dt.id 
+            WHERE dr.id = ?
+        ");
         if (!$stmt) {
             return ['success' => false, 'message' => 'Database error: ' . $conn->error];
         }
@@ -94,7 +99,26 @@ function updateRequestStatus($conn, $requestId, $newStatus, $changedBy, $notes =
         if (!$row) return ['success' => false, 'message' => 'Request not found.'];
 
         $oldStatus = $row['status'];
-        $allowed   = STATUS_FLOW[$oldStatus] ?? [];
+        $requiresSignature = (bool)$row['requires_signature'];
+        
+        // Enhanced validation with signature requirement check
+        $allowed = STATUS_FLOW[$oldStatus] ?? [];
+        
+        // If moving to for_signature but document doesn't require signatures, prevent it
+        if ($newStatus === 'for_signature' && !$requiresSignature) {
+            return [
+                'success' => false,
+                'message' => 'This document type does not require signatures. Use "approved" instead.'
+            ];
+        }
+        
+        // If moving to approved but document requires signatures, prevent it  
+        if ($newStatus === 'approved' && $requiresSignature) {
+            return [
+                'success' => false,
+                'message' => 'This document type requires signatures. Use "for_signature" instead.'
+            ];
+        }
 
         if (!in_array($newStatus, $allowed)) {
             return [
@@ -106,22 +130,9 @@ function updateRequestStatus($conn, $requestId, $newStatus, $changedBy, $notes =
         // Calculate estimated release date when approved or processing
         $estimatedDate = null;
         if (in_array($newStatus, ['approved', 'processing'])) {
-            $procStmt = $conn->prepare("
-                SELECT dt.processing_days 
-                FROM document_requests dr 
-                JOIN document_types dt ON dr.document_type_id = dt.id 
-                WHERE dr.id = ?
-            ");
-            if ($procStmt) {
-                $procStmt->bind_param("i", $requestId);
-                $procStmt->execute();
-                $procRow = $procStmt->get_result()->fetch_assoc();
-                $procStmt->close();
-                
-                if ($procRow && isset($procRow['processing_days'])) {
-                    $days = intval($procRow['processing_days']);
-                    $estimatedDate = date('Y-m-d', strtotime("+$days days"));
-                }
+            if (isset($row['processing_days']) && $row['processing_days'] > 0) {
+                $days = intval($row['processing_days']);
+                $estimatedDate = date('Y-m-d', strtotime("+$days days"));
             }
         }
 
@@ -136,6 +147,11 @@ function updateRequestStatus($conn, $requestId, $newStatus, $changedBy, $notes =
                 $stmt = $conn->prepare($sql);
                 $stmt->bind_param("si", $newStatus, $requestId);
             }
+        } elseif ($newStatus === 'for_signature') {
+            // When moving to for_signature, create signature routes if helper exists
+            $sql = "UPDATE document_requests SET status = ?, updated_at = NOW() WHERE id = ?";
+            $stmt = $conn->prepare($sql);
+            $stmt->bind_param("si", $newStatus, $requestId);
         } elseif ($newStatus === 'processing') {
             if ($estimatedDate) {
                 $sql = "UPDATE document_requests SET status = ?, estimated_release_date = ?, updated_at = NOW() WHERE id = ?";
@@ -146,6 +162,11 @@ function updateRequestStatus($conn, $requestId, $newStatus, $changedBy, $notes =
                 $stmt = $conn->prepare($sql);
                 $stmt->bind_param("si", $newStatus, $requestId);
             }
+        } elseif ($newStatus === 'ready') {
+            // When moving to ready, generate claim stub
+            $sql = "UPDATE document_requests SET status = ?, updated_at = NOW() WHERE id = ?";
+            $stmt = $conn->prepare($sql);
+            $stmt->bind_param("si", $newStatus, $requestId);
         } elseif ($newStatus === 'paid') {
             $sql = "UPDATE document_requests SET status = ?, paid_at = NOW(), updated_at = NOW() WHERE id = ?";
             $stmt = $conn->prepare($sql);
@@ -167,26 +188,27 @@ function updateRequestStatus($conn, $requestId, $newStatus, $changedBy, $notes =
         $stmt->execute();
         $stmt->close();
 
+        // If moving to for_signature, create signature routes (if signature_helper is loaded)
+        if ($newStatus === 'for_signature' && $requiresSignature && function_exists('createSignatureRoutes')) {
+            createSignatureRoutes($conn, $requestId);
+        }
+        
+        // If moving to ready, generate claim stub
+        if ($newStatus === 'ready') {
+            $totalFee = $row['fee'] * ($row['copies'] ?? 1);
+            generateClaimStub($conn, $requestId, $row['user_id'], $totalFee);
+        }
+
         // Log the action
         logRequestAction($conn, $requestId, $changedBy, $oldStatus, $newStatus, $notes);
 
         // Send notification to user
-        $reqStmt = $conn->prepare("SELECT user_id FROM document_requests WHERE id = ?");
-        if ($reqStmt) {
-            $reqStmt->bind_param("i", $requestId);
-            $reqStmt->execute();
-            $reqRow = $reqStmt->get_result()->fetch_assoc();
-            $reqStmt->close();
-
-            if ($reqRow) {
-                sendNotification(
-                    $conn,
-                    $reqRow['user_id'],
-                    buildNotificationMessage($newStatus, $requestId),
-                    $requestId
-                );
-            }
-        }
+        sendNotification(
+            $conn,
+            $row['user_id'],
+            buildNotificationMessage($newStatus, $requestId),
+            $requestId
+        );
 
         return ['success' => true, 'message' => "Status updated to '$newStatus'."];
     } catch (Exception $e) {
@@ -272,10 +294,20 @@ function sendEmailNotification($request, $message) {
     
     $subject = "DocuGo Notification: Request #{$request['request_code']}";
     
+    // Get stub code if exists
+    $stubCode = '';
+    $stubStmt = $GLOBALS['conn']->prepare("SELECT stub_code FROM claim_stubs WHERE request_id = ?");
+    if ($stubStmt) {
+        $stubStmt->bind_param("i", $request['id']);
+        $stubStmt->execute();
+        $stubResult = $stubStmt->get_result()->fetch_assoc();
+        $stubCode = $stubResult['stub_code'] ?? '';
+        $stubStmt->close();
+    }
+    
     // Customize message based on status
     switch ($request['status']) {
         case 'ready':
-            $stubCode = $request['stub_code'] ?? '';
             $amountDue = number_format($request['fee'] * $request['copies'], 2);
             $body = "
             <div style='font-family:Arial;background:#f0f4f8;padding:20px;'>
@@ -289,13 +321,14 @@ function sendEmailNotification($request, $message) {
                         <p><strong>Document:</strong> {$request['doc_type']}</p>
                         <p><strong>Amount Due:</strong> ₱{$amountDue}</p>
                         <p>Please proceed to the Registrar's Office to pay and claim your document.</p>
+                        " . ($stubCode ? "
                         <div style='text-align:center;margin:20px 0;'>
                             <a href='" . SITE_URL . "/student/claim_stub.php?code=" . $stubCode . "' 
                                style='background:#1a56db;color:#fff;padding:12px 20px;
                                       text-decoration:none;border-radius:6px;'>
                                 View Claim Stub
                             </a>
-                        </div>
+                        </div>" : "") . "
                         <p style='font-size:12px;color:#666;'>
                             Keep this notification for your reference.
                         </p>
@@ -304,7 +337,6 @@ function sendEmailNotification($request, $message) {
             </div>";
             break;
         case 'released':
-            $stubCode = $request['stub_code'] ?? '';
             $body = "
             <div style='font-family:Arial;background:#f0f4f8;padding:20px;'>
                 <div style='max-width:520px;margin:auto;background:#fff;border-radius:10px;overflow:hidden;'>
@@ -316,13 +348,14 @@ function sendEmailNotification($request, $message) {
                         <p>Your document request #{$request['request_code']} has been released!</p>
                         <p><strong>Document:</strong> {$request['doc_type']}</p>
                         <p><strong>Status:</strong> Successfully claimed</p>
+                        " . ($stubCode ? "
                         <div style='text-align:center;margin:20px 0;'>
                             <a href='" . SITE_URL . "/student/claim_stub.php?code=" . $stubCode . "' 
                                style='background:#1a56db;color:#fff;padding:12px 20px;
                                       text-decoration:none;border-radius:6px;'>
                                 View Claim Stub
                             </a>
-                        </div>
+                        </div>" : "") . "
                         <p style='font-size:12px;color:#666;'>
                             Thank you for using DocuGo.
                         </p>
@@ -401,6 +434,15 @@ function generateClaimStub($conn, $requestId, $userId, $totalFee) {
         $stmt->bind_param("iissd", $requestId, $userId, $stubCode, $qrData, $totalFee);
         $result = $stmt->execute();
         $stmt->close();
+        
+        // Update document_requests with stub_code
+        $updateStmt = $conn->prepare("UPDATE document_requests SET stub_code = ? WHERE id = ?");
+        if ($updateStmt) {
+            $updateStmt->bind_param("si", $stubCode, $requestId);
+            $updateStmt->execute();
+            $updateStmt->close();
+        }
+        
         return $result;
     } catch (Exception $e) {
         error_log("Error in generateClaimStub: " . $e->getMessage());
@@ -438,7 +480,7 @@ function processPayAndRelease($conn, $requestId, $staffId, $receiptNumber, $note
             return ['success' => false, 'message' => 'Only requests with status READY can be paid and released.'];
         }
 
-        // FIX #2: Check payment_records table — the real source of truth for payment
+        // Check payment_records table — the real source of truth for payment
         $checkPay = $conn->prepare("SELECT id FROM payment_records WHERE request_id = ? LIMIT 1");
         $checkPay->bind_param("i", $requestId);
         $checkPay->execute();
@@ -484,6 +526,7 @@ function processPayAndRelease($conn, $requestId, $staffId, $receiptNumber, $note
         $updStmt = $conn->prepare("
             UPDATE document_requests
             SET status = 'paid',
+                payment_status = 'paid',
                 paid_at = NOW(),
                 updated_at = NOW()
             WHERE id = ?
@@ -497,8 +540,7 @@ function processPayAndRelease($conn, $requestId, $staffId, $receiptNumber, $note
         $updStmt->execute();
         $updStmt->close();
 
-        // FIX #3: Removed orphaned $stubStmt->close() and stray closing brace.
-        // generateClaimStub manages its own statement lifecycle internally.
+        // Generate claim stub
         generateClaimStub($conn, $requestId, $request['user_id'], $amount);
 
         // 4. Insert/update release_schedules
@@ -552,7 +594,8 @@ function processPayAndRelease($conn, $requestId, $staffId, $receiptNumber, $note
         sendNotification(
             $conn,
             $request['user_id'],
-            "✅ Your document request #{$requestId} has been paid (OR#: {$receiptNumber}) and released. Thank you!"
+            "✅ Your document request #{$requestId} has been paid (OR#: {$receiptNumber}) and released. Thank you!",
+            $requestId
         );
 
         // 9. Log payment audit
@@ -597,12 +640,78 @@ function statusBadge($status) {
 }
 
 // ── Get payment status badge ─────────────────────────────────
-// FIX #1 (badge side): Now accepts a boolean $isPaid instead of a status string.
-// Callers must pass: !empty($r['official_receipt_number']) || $r['status'] === 'paid' || $r['status'] === 'released'
 function paymentBadge($isPaid) {
     if ($isPaid) {
         return "<span style='background:#dcfce7;color:#166534;padding:2px 8px;border-radius:8px;font-size:0.72rem;font-weight:700;'>✓ Paid</span>";
     }
     return "<span style='background:#fef3c7;color:#92400e;padding:2px 8px;border-radius:8px;font-size:0.72rem;font-weight:700;'>⚠ Unpaid</span>";
+}
+
+// ── Get document requests with filters ───────────────────────
+function getDocumentRequests($conn, $filters = [], $limit = null, $offset = 0) {
+    $sql = "
+        SELECT dr.*, 
+               dt.name as document_name, 
+               dt.fee,
+               CONCAT(u.first_name, ' ', u.last_name) as requester_name,
+               u.email as requester_email,
+               u.student_id
+        FROM document_requests dr
+        JOIN document_types dt ON dr.document_type_id = dt.id
+        JOIN users u ON dr.user_id = u.id
+        WHERE 1=1
+    ";
+    
+    $params = [];
+    $types = "";
+    
+    if (!empty($filters['status'])) {
+        $sql .= " AND dr.status = ?";
+        $params[] = $filters['status'];
+        $types .= "s";
+    }
+    
+    if (!empty($filters['user_id'])) {
+        $sql .= " AND dr.user_id = ?";
+        $params[] = $filters['user_id'];
+        $types .= "i";
+    }
+    
+    if (!empty($filters['date_from'])) {
+        $sql .= " AND DATE(dr.requested_at) >= ?";
+        $params[] = $filters['date_from'];
+        $types .= "s";
+    }
+    
+    if (!empty($filters['date_to'])) {
+        $sql .= " AND DATE(dr.requested_at) <= ?";
+        $params[] = $filters['date_to'];
+        $types .= "s";
+    }
+    
+    $sql .= " ORDER BY dr.requested_at DESC";
+    
+    if ($limit) {
+        $sql .= " LIMIT ? OFFSET ?";
+        $params[] = $limit;
+        $params[] = $offset;
+        $types .= "ii";
+    }
+    
+    $stmt = $conn->prepare($sql);
+    if (!empty($params)) {
+        $stmt->bind_param($types, ...$params);
+    }
+    
+    $stmt->execute();
+    $result = $stmt->get_result();
+    $requests = [];
+    
+    while ($row = $result->fetch_assoc()) {
+        $requests[] = $row;
+    }
+    
+    $stmt->close();
+    return $requests;
 }
 ?>
