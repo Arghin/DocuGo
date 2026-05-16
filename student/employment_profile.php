@@ -79,7 +79,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'
 
     $action = $_POST['action'] ?? '';
 
-    // ── Create table if not exists ───────────────────────
+    /* ── Create table if not exists ─────────────────────── */
     if (!$tableExists) {
         $conn->query("
             CREATE TABLE alumni_employment (
@@ -103,7 +103,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'
         $tableExists = true;
     }
 
-    // ── Add / Edit employment ────────────────────────────
+    /* ── Add / Edit employment ───────────────────────────── */
     if ($action === 'save_employment') {
         $editId      = intval($_POST['edit_id'] ?? 0);
         $company     = trim($_POST['company_name']      ?? '');
@@ -117,19 +117,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'
         $description = trim($_POST['description']        ?? '');
         $skills      = trim($_POST['skills']             ?? '');
 
-        // Validate
-        if (empty($company))     $error = 'Company name is required.';
-        elseif (empty($jobTitle))$error = 'Job title is required.';
-        elseif (empty($dateStarted)) $error = 'Start date is required.';
+        if (empty($company))          $error = 'Company name is required.';
+        elseif (empty($jobTitle))     $error = 'Job title is required.';
+        elseif (empty($dateStarted))  $error = 'Start date is required.';
         elseif (!$isCurrent && empty($dateEnded)) $error = 'End date is required if not current job.';
 
         if (empty($error)) {
-            $endVal     = $isCurrent ? null : $dateEnded;
-            $industryVal= $industry   === '' ? null : $industry;
-            $descVal    = $description=== '' ? null : $description;
-            $skillsVal  = $skills     === '' ? null : $skills;
+            $endVal      = $isCurrent    ? null : $dateEnded;
+            $industryVal = $industry     === '' ? null : $industry;
+            $descVal     = $description  === '' ? null : $description;
+            $skillsVal   = $skills       === '' ? null : $skills;
 
-            // If marking as current, unset other current jobs
+            // If marking as current, unset other current jobs first
             if ($isCurrent) {
                 $conn->query("UPDATE alumni_employment SET is_current=0 WHERE user_id=$userId");
             }
@@ -142,25 +141,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'
                         description=?, skills=?, updated_at=NOW()
                     WHERE id=? AND user_id=?
                 ");
+                // 10 string/int params + edit_id(i) + user_id(i) = sssssssiisii
                 $stmt->bind_param(
                     "sssssssiisii",
-                    $company,$jobTitle,$workSetup,$empType,
-                    $industryVal,$dateStarted,$endVal,$isCurrent,
-                    $descVal,$skillsVal,$editId,$userId
+                    $company, $jobTitle, $workSetup, $empType,
+                    $industryVal, $dateStarted, $endVal, $isCurrent,
+                    $descVal, $skillsVal, $editId, $userId
                 );
                 $msg = 'Employment record updated successfully.';
             } else {
                 $stmt = $conn->prepare("
                     INSERT INTO alumni_employment
-                        (user_id,company_name,job_title,work_setup,employment_type,
-                         industry,date_started,date_ended,is_current,description,skills)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                        (user_id, company_name, job_title, work_setup, employment_type,
+                         industry, date_started, date_ended, is_current, description, skills)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ");
+                // FIX: was "isssssssis s" (had a space — broken). Correct: isssssssiss
+                // i=user_id, s=company, s=jobTitle, s=workSetup, s=empType,
+                // s=industryVal, s=dateStarted, s=endVal, i=isCurrent, s=descVal, s=skillsVal
                 $stmt->bind_param(
-                    "isssssssis s",
-                    $userId,$company,$jobTitle,$workSetup,$empType,
-                    $industryVal,$dateStarted,$endVal,$isCurrent,
-                    $descVal,$skillsVal
+                    "isssssssiss",
+                    $userId, $company, $jobTitle, $workSetup, $empType,
+                    $industryVal, $dateStarted, $endVal, $isCurrent,
+                    $descVal, $skillsVal
                 );
                 $msg = 'Employment record added successfully.';
             }
@@ -172,9 +175,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'
             }
             $stmt->close();
 
-            // Refresh
-            $stmt = $conn->prepare("SELECT * FROM alumni_employment WHERE user_id=? ORDER BY is_current DESC, date_started DESC");
-            $stmt->bind_param("i", $userId); $stmt->execute();
+            // Refresh list
+            $stmt = $conn->prepare("
+                SELECT * FROM alumni_employment
+                WHERE user_id=?
+                ORDER BY is_current DESC, date_started DESC
+            ");
+            $stmt->bind_param("i", $userId);
+            $stmt->execute();
             $result = $stmt->get_result();
             $employments = [];
             while ($row = $result->fetch_assoc()) $employments[] = $row;
@@ -182,7 +190,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'
         }
     }
 
-    // ── Delete employment ────────────────────────────────
+    /* ── Delete employment ───────────────────────────────── */
     if ($action === 'delete_employment') {
         $delId = intval($_POST['delete_id'] ?? 0);
         if ($delId > 0) {
@@ -195,9 +203,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'
             }
             $stmt->close();
 
-            // Refresh
-            $stmt = $conn->prepare("SELECT * FROM alumni_employment WHERE user_id=? ORDER BY is_current DESC, date_started DESC");
-            $stmt->bind_param("i", $userId); $stmt->execute();
+            // Refresh list
+            $stmt = $conn->prepare("
+                SELECT * FROM alumni_employment
+                WHERE user_id=?
+                ORDER BY is_current DESC, date_started DESC
+            ");
+            $stmt->bind_param("i", $userId);
+            $stmt->execute();
             $result = $stmt->get_result();
             $employments = [];
             while ($row = $result->fetch_assoc()) $employments[] = $row;
@@ -234,7 +247,6 @@ $empTypeLabels = [
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Employment Profile — DocuGo</title>
     <style>
-        /* ─── Reset & Base ────────────────────────────── */
         *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
         body {
@@ -247,7 +259,6 @@ $empTypeLabels = [
             line-height: 1.5;
         }
 
-        /* ─── Sidebar ─────────────────────────────────── */
         .sidebar {
             width: 220px; background: #1a56db; color: #fff;
             min-height: 100vh; flex-shrink: 0;
@@ -288,10 +299,8 @@ $empTypeLabels = [
         }
         .sidebar-footer a:hover { color: #fff; }
 
-        /* ─── Main ────────────────────────────────────── */
         .main { margin-left: 220px; flex: 1; padding: 2rem; min-width: 0; }
 
-        /* ─── Topbar ──────────────────────────────────── */
         .topbar {
             display: flex; align-items: center; justify-content: space-between;
             margin-bottom: 1.6rem; gap: 1rem;
@@ -299,7 +308,6 @@ $empTypeLabels = [
         .topbar h1 { font-size: 1.35rem; font-weight: 800; color: #111827; }
         .topbar-right { display: flex; align-items: center; gap: 0.65rem; flex-shrink: 0; }
 
-        /* ─── Notification Bell ───────────────────────── */
         .notif-wrap { position: relative; }
         .notif-btn {
             position: relative; width: 40px; height: 40px; border-radius: 50%;
@@ -370,7 +378,6 @@ $empTypeLabels = [
         .notif-panel-footer a { font-size: 0.8rem; color: #1a56db; text-decoration: none; font-weight: 700; }
         .notif-panel-footer a:hover { text-decoration: underline; }
 
-        /* ─── User Chip ───────────────────────────────── */
         .user-chip {
             display: flex; align-items: center; gap: 0.5rem;
             background: #fff; border: 1px solid #e5e7eb; border-radius: 20px;
@@ -386,12 +393,10 @@ $empTypeLabels = [
         }
         .user-chip strong { color: #111827; font-weight: 700; }
 
-        /* ─── Alerts ──────────────────────────────────── */
         .alert { padding: 0.85rem 1rem; border-radius: 8px; margin-bottom: 1.2rem; font-size: 0.875rem; font-weight: 500; }
         .alert-success { background: #d1fae5; color: #065f46; border-left: 4px solid #059669; }
         .alert-error   { background: #fee2e2; color: #991b1b; border-left: 4px solid #dc2626; }
 
-        /* ─── Intro Banner ────────────────────────────── */
         .intro-banner {
             background: linear-gradient(135deg, #1a56db 0%, #1447c0 100%);
             color: #fff; padding: 1.4rem 1.6rem;
@@ -403,7 +408,6 @@ $empTypeLabels = [
         .intro-text h2 { font-size: 1.1rem; font-weight: 800; margin-bottom: 0.3rem; }
         .intro-text p  { font-size: 0.82rem; opacity: 0.88; line-height: 1.6; }
 
-        /* ─── Section Card ────────────────────────────── */
         .section-card {
             background: #fff; border-radius: 10px;
             box-shadow: 0 1px 4px rgba(0,0,0,0.06);
@@ -418,7 +422,6 @@ $empTypeLabels = [
         .section-icon { font-size: 1.1rem; }
         .section-body { padding: 1.2rem; }
 
-        /* ─── Add Button ──────────────────────────────── */
         .btn-add {
             display: flex; align-items: center; gap: 0.4rem;
             padding: 0.4rem 0.9rem; background: #1a56db; color: #fff;
@@ -428,7 +431,6 @@ $empTypeLabels = [
         }
         .btn-add:hover { background: #1447c0; }
 
-        /* ─── Timeline ────────────────────────────────── */
         .timeline { position: relative; padding-left: 1.6rem; }
         .timeline::before {
             content: ''; position: absolute;
@@ -441,11 +443,9 @@ $empTypeLabels = [
             position: absolute; left: -1.6rem; top: 12px;
             width: 16px; height: 16px; border-radius: 50%;
             background: #cbd5e1; border: 3px solid #f0f4f8;
-            transition: background 0.2s;
         }
-        .tl-dot.current { background: #059669; border-color: #f0f4f8; }
+        .tl-dot.current { background: #059669; }
 
-        /* ─── Entry Card ──────────────────────────────── */
         .entry-card {
             background: #f9fafb; border: 1px solid #e5e7eb;
             border-radius: 10px; padding: 1rem 1.1rem;
@@ -475,13 +475,8 @@ $empTypeLabels = [
         .badge-gray   { background: #f3f4f6; color: #374151; }
         .badge-current{ background: #d1fae5; color: #065f46; border: 1px solid #6ee7b7; }
 
-        .entry-desc {
-            font-size: 0.825rem; color: #374151;
-            margin-top: 0.65rem; line-height: 1.55;
-        }
-        .entry-skills {
-            margin-top: 0.5rem; font-size: 0.775rem; color: #6b7280;
-        }
+        .entry-desc { font-size: 0.825rem; color: #374151; margin-top: 0.65rem; line-height: 1.55; }
+        .entry-skills { margin-top: 0.5rem; font-size: 0.775rem; color: #6b7280; }
         .entry-skills strong { color: #374151; }
 
         .entry-actions { display: flex; gap: 0.4rem; flex-shrink: 0; }
@@ -495,15 +490,11 @@ $empTypeLabels = [
         .btn-edit   { background: #dbeafe; color: #1e40af; }
         .btn-delete { background: #fee2e2; color: #991b1b; }
 
-        /* ─── Empty State ─────────────────────────────── */
-        .empty-state {
-            text-align: center; padding: 3rem 1.5rem;
-        }
+        .empty-state { text-align: center; padding: 3rem 1.5rem; }
         .empty-icon { font-size: 2.5rem; margin-bottom: 0.75rem; }
         .empty-state h4 { font-size: 0.95rem; font-weight: 700; color: #374151; margin-bottom: 0.3rem; }
         .empty-state p  { font-size: 0.82rem; color: #9ca3af; margin-bottom: 1rem; }
 
-        /* ─── Form ────────────────────────────────────── */
         .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
         .form-grid .full { grid-column: 1 / -1; }
         .form-group { display: flex; flex-direction: column; gap: 0.3rem; }
@@ -525,7 +516,6 @@ $empTypeLabels = [
         .form-textarea { resize: vertical; min-height: 80px; }
         .form-hint { font-size: 0.73rem; color: #9ca3af; }
 
-        /* ─── Check Row ───────────────────────────────── */
         .check-row {
             display: flex; align-items: center; gap: 0.6rem;
             padding: 0.75rem 0.9rem;
@@ -538,11 +528,9 @@ $empTypeLabels = [
         }
         .check-row label { font-size: 0.855rem; color: #374151; font-weight: 500; cursor: pointer; margin: 0; }
 
-        /* ─── Conditional ─────────────────────────────── */
         .cond { display: none; }
         .cond.active { display: grid; }
 
-        /* ─── Submit ──────────────────────────────────── */
         .btn-row { display: flex; gap: 0.75rem; margin-top: 1rem; }
         .btn-save {
             flex: 1; padding: 0.75rem;
@@ -561,7 +549,6 @@ $empTypeLabels = [
         }
         .btn-cancel-form:hover { background: #e5e7eb; }
 
-        /* ─── Stats row ───────────────────────────────── */
         .stats-row {
             display: grid; grid-template-columns: repeat(3, 1fr);
             gap: 0.85rem; margin-bottom: 1.1rem;
@@ -583,7 +570,6 @@ $empTypeLabels = [
         .stat-num   { font-size: 1.5rem; font-weight: 800; color: #111827; line-height: 1; }
         .stat-label { font-size: 0.75rem; color: #6b7280; margin-top: 2px; }
 
-        /* ─── Responsive ──────────────────────────────── */
         @media (max-width: 900px) {
             .sidebar { display: none; }
             .main { margin-left: 0; padding: 1rem; }
@@ -593,14 +579,12 @@ $empTypeLabels = [
         }
         @media (max-width: 500px) {
             .notif-panel { width: 280px; right: -50px; }
-            .notif-panel::before { right: 64px; }
             .stats-row { grid-template-columns: 1fr; }
         }
     </style>
 </head>
 <body>
 
-<!-- ─── Sidebar ─────────────────────────────────────────── -->
 <aside class="sidebar">
     <div class="sidebar-brand">
         DocuGo
@@ -614,26 +598,20 @@ $empTypeLabels = [
         <div class="menu-label">Alumni</div>
         <a href="graduate_tracer.php"    class="menu-item"><span class="icon">📊</span> Graduate Tracer</a>
         <a href="employment_profile.php" class="menu-item active"><span class="icon">💼</span> Employment Profile</a>
-        <a href="alumni_documents.php" class="menu-item">
-            <span class="icon">🎓</span> Alumni Documents
-        </a>
+        <a href="alumni_documents.php"   class="menu-item"><span class="icon">🎓</span> Alumni Documents</a>
         <div class="menu-label">Account</div>
-        <a href="profile.php"       class="menu-item"><span class="icon">👤</span> Profile</a>
+        <a href="profile.php" class="menu-item"><span class="icon">👤</span> Profile</a>
     </nav>
     <div class="sidebar-footer">
         <a href="../logout.php">🚪 Logout</a>
     </div>
 </aside>
 
-<!-- ─── Main ────────────────────────────────────────────── -->
 <main class="main">
 
-    <!-- Topbar -->
     <div class="topbar">
         <h1>💼 Employment Profile</h1>
         <div class="topbar-right">
-
-            <!-- 🔔 Notification Bell -->
             <div class="notif-wrap" id="notifWrap">
                 <button class="notif-btn <?= $unreadCount > 0 ? 'has-unread' : '' ?>"
                         id="notifBtn" onclick="togglePanel(event)" title="Notifications">
@@ -664,7 +642,6 @@ $empTypeLabels = [
                     </div>
                 </div>
             </div>
-
             <div class="user-chip">
                 <div class="chip-avatar"><?= $initial ?></div>
                 <strong><?= $fullName ?></strong>
@@ -679,24 +656,19 @@ $empTypeLabels = [
         <div class="alert alert-error">⚠️ <?= e($error) ?></div>
     <?php endif; ?>
 
-    <!-- Intro Banner -->
     <div class="intro-banner">
         <div class="intro-icon">💼</div>
         <div class="intro-text">
             <h2>Your Employment History</h2>
-            <p>
-                Add and manage your work experience here. This information helps
-                the school track graduate outcomes and supports your professional record.
-                Your data is confidential and used only for institutional purposes.
-            </p>
+            <p>Add and manage your work experience here. This information helps the school track
+               graduate outcomes and supports your professional record. Your data is confidential
+               and used only for institutional purposes.</p>
         </div>
     </div>
 
-    <!-- Stats -->
     <?php
-    $totalJobs   = count($employments);
-    $currentJob  = array_filter($employments, fn($e) => (int)$e['is_current'] === 1);
-    $hasLicense  = false; // pulled from tracer
+    $totalJobs  = count($employments);
+    $currentJob = array_filter($employments, fn($e) => (int)$e['is_current'] === 1);
     ?>
     <div class="stats-row">
         <div class="stat-card">
@@ -730,16 +702,13 @@ $empTypeLabels = [
         </div>
     </div>
 
-    <!-- ── Employment List ──────────────────────────────── -->
     <div class="section-card">
         <div class="section-header">
             <div class="section-header-left">
                 <span class="section-icon">🏢</span>
                 <h3>Work Experience</h3>
             </div>
-            <button class="btn-add" onclick="openForm()">
-                + Add Experience
-            </button>
+            <button class="btn-add" onclick="openForm()">+ Add Experience</button>
         </div>
         <div class="section-body">
 
@@ -756,10 +725,10 @@ $empTypeLabels = [
             <?php else: ?>
             <div class="timeline">
                 <?php foreach ($employments as $emp):
-                    $isCurr   = (int)$emp['is_current'] === 1;
-                    $wsLabel  = $workSetupLabels[$emp['work_setup']] ?? ['🏢','On-site'];
-                    $etLabel  = $empTypeLabels[$emp['employment_type']] ?? ['💼','Full-time'];
-                    $endDisp  = $isCurr ? 'Present' : fd($emp['date_ended']);
+                    $isCurr  = (int)$emp['is_current'] === 1;
+                    $wsLabel = $workSetupLabels[$emp['work_setup']] ?? ['🏢', 'On-site'];
+                    $etLabel = $empTypeLabels[$emp['employment_type']] ?? ['💼', 'Full-time'];
+                    $endDisp = $isCurr ? 'Present' : fd($emp['date_ended']);
                 ?>
                 <div class="tl-entry">
                     <div class="tl-dot <?= $isCurr ? 'current' : '' ?>"></div>
@@ -768,9 +737,7 @@ $empTypeLabels = [
                             <div>
                                 <div class="entry-title"><?= e($emp['job_title']) ?></div>
                                 <div class="entry-company">🏢 <?= e($emp['company_name']) ?></div>
-                                <div class="entry-dates">
-                                    📅 <?= fd($emp['date_started']) ?> — <?= $endDisp ?>
-                                </div>
+                                <div class="entry-dates">📅 <?= fd($emp['date_started']) ?> — <?= $endDisp ?></div>
                                 <div class="entry-badges">
                                     <?php if ($isCurr): ?>
                                         <span class="badge badge-current">● Current Job</span>
@@ -799,9 +766,7 @@ $empTypeLabels = [
                             <div class="entry-desc"><?= nl2br(e($emp['description'])) ?></div>
                         <?php endif; ?>
                         <?php if ($emp['skills']): ?>
-                            <div class="entry-skills">
-                                <strong>Skills:</strong> <?= e($emp['skills']) ?>
-                            </div>
+                            <div class="entry-skills"><strong>Skills:</strong> <?= e($emp['skills']) ?></div>
                         <?php endif; ?>
                     </div>
                 </div>
@@ -812,7 +777,7 @@ $empTypeLabels = [
         </div>
     </div>
 
-    <!-- ── Add/Edit Form ────────────────────────────────── -->
+    <!-- Add / Edit Form -->
     <div class="section-card" id="formSection" style="display:none;">
         <div class="section-header">
             <div class="section-header-left">
@@ -855,7 +820,7 @@ $empTypeLabels = [
                         </select>
                     </div>
                     <div class="form-group">
-                        <label class="form-label">Industry <span class="opt">(opt.)</span></label>
+                        <label class="form-label">Industry <span class="opt">(optional)</span></label>
                         <input type="text" name="industry" id="f_industry"
                                class="form-input" placeholder="e.g. Information Technology, Education">
                     </div>
@@ -866,7 +831,6 @@ $empTypeLabels = [
                     </div>
                 </div>
 
-                <!-- Current job checkbox -->
                 <div class="check-row" style="margin: 0.75rem 0;"
                      onclick="document.getElementById('f_is_current').click()">
                     <input type="checkbox" name="is_current" id="f_is_current" value="1"
@@ -874,7 +838,6 @@ $empTypeLabels = [
                     <label for="f_is_current">I currently work here</label>
                 </div>
 
-                <!-- End date (conditional) -->
                 <div class="form-grid cond active" id="endDateRow" style="margin-bottom:0.75rem;">
                     <div class="form-group">
                         <label class="form-label">End Date <span style="color:#dc2626;">*</span></label>
@@ -885,12 +848,12 @@ $empTypeLabels = [
 
                 <div class="form-grid" style="margin-top:0;">
                     <div class="form-group full">
-                        <label class="form-label">Job Description <span class="opt">(opt.)</span></label>
+                        <label class="form-label">Job Description <span class="opt">(optional)</span></label>
                         <textarea name="description" id="f_description" class="form-textarea"
                                   placeholder="Briefly describe your responsibilities and achievements…"></textarea>
                     </div>
                     <div class="form-group full">
-                        <label class="form-label">Skills Used <span class="opt">(opt.)</span></label>
+                        <label class="form-label">Skills Used <span class="opt">(optional)</span></label>
                         <input type="text" name="skills" id="f_skills" class="form-input"
                                placeholder="e.g. PHP, MySQL, Project Management, Customer Service">
                         <span class="form-hint">Separate skills with commas.</span>
@@ -899,9 +862,7 @@ $empTypeLabels = [
 
                 <div class="btn-row">
                     <button type="button" class="btn-cancel-form" onclick="closeForm()">Cancel</button>
-                    <button type="submit" class="btn-save">
-                        💾 Save Experience
-                    </button>
+                    <button type="submit" class="btn-save">💾 Save Experience</button>
                 </div>
             </form>
         </div>
@@ -909,9 +870,8 @@ $empTypeLabels = [
 
 </main>
 
-<!-- ─── JS ──────────────────────────────────────────────── -->
 <script>
-/* ── Notification Bell (identical to graduate_tracer.php) ── */
+/* ── Notification Bell ──────────────────────────────────── */
 let panelOpen   = false;
 let unreadCount = <?= $unreadCount ?>;
 const PAGE_URL  = window.location.pathname;
@@ -932,98 +892,31 @@ document.addEventListener('keydown', function(e) {
     }
 });
 function loadNotifList() {
-    fetch('dashboard.php?ajax_notif_list=1')
-        .then(r => r.json()).then(renderList).catch(() => {});
+    fetch('dashboard.php?ajax_notif_list=1').then(r=>r.json()).then(renderList).catch(()=>{});
 }
 function markRead(id, el) {
     if (!el.classList.contains('unread')) return;
-    fetch(PAGE_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: 'ajax_mark_read=1&notif_id=' + id
-    }).then(r => r.json()).then(d => {
-        if (!d.ok) return;
-        el.classList.remove('unread');
-        const dot = document.getElementById('dot-' + id);
-        if (dot) dot.remove();
-        unreadCount = Math.max(0, unreadCount - 1);
-        syncBadge();
-    });
+    fetch(PAGE_URL,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'ajax_mark_read=1&notif_id='+id})
+    .then(r=>r.json()).then(d=>{if(!d.ok)return;el.classList.remove('unread');const dot=document.getElementById('dot-'+id);if(dot)dot.remove();unreadCount=Math.max(0,unreadCount-1);syncBadge();});
 }
 function markAllRead() {
-    fetch(PAGE_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: 'ajax_mark_all_read=1'
-    }).then(r => r.json()).then(d => {
-        if (!d.ok) return;
-        document.querySelectorAll('.notif-item.unread').forEach(el => el.classList.remove('unread'));
-        document.querySelectorAll('.notif-unread-dot').forEach(el => el.remove());
-        unreadCount = 0; syncBadge();
-    });
+    fetch(PAGE_URL,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'ajax_mark_all_read=1'})
+    .then(r=>r.json()).then(d=>{if(!d.ok)return;document.querySelectorAll('.notif-item.unread').forEach(el=>el.classList.remove('unread'));document.querySelectorAll('.notif-unread-dot').forEach(el=>el.remove());unreadCount=0;syncBadge();});
 }
 function syncBadge() {
-    const badge = document.getElementById('notifBadge');
-    const pill  = document.getElementById('countPill');
-    const btn   = document.getElementById('notifBtn');
-    if (unreadCount > 0) {
-        badge.textContent = unreadCount > 99 ? '99+' : unreadCount;
-        badge.classList.remove('hidden');
-        pill.textContent = unreadCount + ' new';
-        pill.style.opacity = '1';
-        btn.classList.add('has-unread');
-    } else {
-        badge.classList.add('hidden');
-        pill.style.opacity = '0';
-        btn.classList.remove('has-unread');
-    }
+    const badge=document.getElementById('notifBadge'),pill=document.getElementById('countPill'),btn=document.getElementById('notifBtn');
+    if(unreadCount>0){badge.textContent=unreadCount>99?'99+':unreadCount;badge.classList.remove('hidden');pill.textContent=unreadCount+' new';pill.style.opacity='1';btn.classList.add('has-unread');}
+    else{badge.classList.add('hidden');pill.style.opacity='0';btn.classList.remove('has-unread');}
 }
-function renderList(items) {
-    const list = document.getElementById('notifList');
-    if (!items.length) {
-        list.innerHTML = '<div class="notif-empty"><div class="empty-emoji">🎉</div><p>All caught up!</p></div>';
-        return;
-    }
-    const iconMap = [
-        ['ready','📦','type-ready','Document Ready'],
-        ['approv','✅','type-approved','Request Approved'],
-        ['process','⚙️','type-process','Being Processed'],
-        ['cancel','❌','type-cancel','Request Cancelled'],
-        ['releas','📬','type-ready','Document Released'],
-        ['paid','💳','type-approved','Payment Confirmed'],
-        ['welcom','👋','type-info','Welcome!'],
-    ];
-    list.innerHTML = items.map(n => {
-        const lm = n.message.toLowerCase();
-        let [emoji, cls, title] = ['🔔','type-info','Notification'];
-        for (const [k,e,c,t] of iconMap) { if (lm.includes(k)) { emoji=e; cls=c; title=t; break; } }
-        const isNew = n.is_read == 0;
-        return `<div class="notif-item ${isNew?'unread':''}" id="ni-${n.id}" onclick="markRead(${n.id},this)">
-            <div class="notif-item-icon ${cls}">${emoji}</div>
-            <div class="notif-item-body">
-                <div class="notif-item-title">${esc(title)}</div>
-                <div class="notif-item-msg">${esc(n.message)}</div>
-                <div class="notif-item-time">🕐 ${jsAgo(n.created_at)}</div>
-            </div>
-            ${isNew?`<div class="notif-unread-dot" id="dot-${n.id}"></div>`:''}
-        </div>`;
-    }).join('');
+function renderList(items){
+    const list=document.getElementById('notifList');
+    if(!items.length){list.innerHTML='<div class="notif-empty"><div class="empty-emoji">🎉</div><p>All caught up!</p></div>';return;}
+    const iconMap=[['ready','📦','type-ready','Document Ready'],['approv','✅','type-approved','Request Approved'],['process','⚙️','type-process','Being Processed'],['cancel','❌','type-cancel','Request Cancelled'],['releas','📬','type-ready','Document Released'],['paid','💳','type-approved','Payment Confirmed'],['welcom','👋','type-info','Welcome!']];
+    list.innerHTML=items.map(n=>{const lm=n.message.toLowerCase();let[emoji,cls,title]=['🔔','type-info','Notification'];for(const[k,e,c,t]of iconMap){if(lm.includes(k)){emoji=e;cls=c;title=t;break;}}const isNew=n.is_read==0;return`<div class="notif-item ${isNew?'unread':''}" id="ni-${n.id}" onclick="markRead(${n.id},this)"><div class="notif-item-icon ${cls}">${emoji}</div><div class="notif-item-body"><div class="notif-item-title">${esc(title)}</div><div class="notif-item-msg">${esc(n.message)}</div><div class="notif-item-time">🕐 ${jsAgo(n.created_at)}</div></div>${isNew?`<div class="notif-unread-dot" id="dot-${n.id}"></div>`:''}</div>`;}).join('');
 }
-function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
-function jsAgo(ds) {
-    const d = Math.floor((Date.now() - new Date(ds).getTime()) / 1000);
-    if (d < 60)     return 'just now';
-    if (d < 3600)   return Math.floor(d/60) + ' min ago';
-    if (d < 86400)  return Math.floor(d/3600) + ' hr ago';
-    if (d < 604800) return Math.floor(d/86400) + ' day ago';
-    return new Date(ds).toLocaleDateString('en-US', {month:'short',day:'numeric',year:'numeric'});
-}
-setInterval(() => {
-    fetch('dashboard.php?ajax_unread_count=1')
-        .then(r => r.json())
-        .then(d => { if (typeof d.count === 'number' && d.count !== unreadCount) { unreadCount = d.count; syncBadge(); } })
-        .catch(() => {});
-}, 3000);
+function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+function jsAgo(ds){const d=Math.floor((Date.now()-new Date(ds).getTime())/1000);if(d<60)return'just now';if(d<3600)return Math.floor(d/60)+' min ago';if(d<86400)return Math.floor(d/3600)+' hr ago';if(d<604800)return Math.floor(d/86400)+' day ago';return new Date(ds).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});}
+setInterval(()=>{fetch('dashboard.php?ajax_unread_count=1').then(r=>r.json()).then(d=>{if(typeof d.count==='number'&&d.count!==unreadCount){unreadCount=d.count;syncBadge();}}).catch(()=>{});},3000);
 
 /* ── Employment Form ────────────────────────────────────── */
 function openForm() {
@@ -1034,29 +927,26 @@ function openForm() {
     document.getElementById('formSection').style.display = '';
     document.getElementById('formSection').scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
-
 function closeForm() {
     document.getElementById('formSection').style.display = 'none';
 }
-
 function editRecord(data) {
-    document.getElementById('formTitle').textContent = 'Edit Work Experience';
-    document.getElementById('editId').value          = data.id;
-    document.getElementById('f_company').value       = data.company_name   || '';
-    document.getElementById('f_job_title').value     = data.job_title      || '';
-    document.getElementById('f_work_setup').value    = data.work_setup     || 'onsite';
-    document.getElementById('f_employment_type').value = data.employment_type || 'full_time';
-    document.getElementById('f_industry').value      = data.industry       || '';
-    document.getElementById('f_date_started').value  = data.date_started   || '';
-    document.getElementById('f_date_ended').value    = data.date_ended     || '';
-    document.getElementById('f_is_current').checked  = data.is_current == 1;
-    document.getElementById('f_description').value   = data.description    || '';
-    document.getElementById('f_skills').value        = data.skills         || '';
+    document.getElementById('formTitle').textContent        = 'Edit Work Experience';
+    document.getElementById('editId').value                 = data.id;
+    document.getElementById('f_company').value              = data.company_name    || '';
+    document.getElementById('f_job_title').value            = data.job_title       || '';
+    document.getElementById('f_work_setup').value           = data.work_setup      || 'onsite';
+    document.getElementById('f_employment_type').value      = data.employment_type || 'full_time';
+    document.getElementById('f_industry').value             = data.industry        || '';
+    document.getElementById('f_date_started').value         = data.date_started    || '';
+    document.getElementById('f_date_ended').value           = data.date_ended      || '';
+    document.getElementById('f_is_current').checked         = data.is_current == 1;
+    document.getElementById('f_description').value          = data.description     || '';
+    document.getElementById('f_skills').value               = data.skills          || '';
     toggleEndDate();
     document.getElementById('formSection').style.display = '';
     document.getElementById('formSection').scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
-
 function toggleEndDate() {
     const isCurrent = document.getElementById('f_is_current').checked;
     const row = document.getElementById('endDateRow');
