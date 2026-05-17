@@ -1,41 +1,40 @@
 <?php
 // ================================================================
 // includes/signature_workflow.php
-// Uses: request_signatures, signature_offices, signatory_roles
+// SIMPLIFIED: Any signatory can sign, ONE signature = approved
 // ================================================================
 
 /**
- * Spawn one request_signatures row per required office
+ * Spawn ONE request_signatures row for a request
  * when a request moves to 'for_signature'.
- * Uses INSERT IGNORE — safe to call multiple times.
  */
 function spawnSignatureRows(mysqli $conn, int $requestId, int $documentTypeId): void
 {
-    $stmt = $conn->prepare("
-        SELECT so.id AS office_id
-        FROM   signatory_roles   sr
-        JOIN   signature_offices so ON so.office_code = sr.role_name
-        WHERE  sr.document_type_id = ? AND sr.is_active = 1
-        ORDER  BY sr.order_no ASC
+    // Check if signature row already exists
+    $check = $conn->prepare("
+        SELECT id FROM request_signatures WHERE request_id = ? LIMIT 1
     ");
-    $stmt->bind_param("i", $documentTypeId);
-    $stmt->execute();
-    $offices = $stmt->get_result();
-    $stmt->close();
-
-    $ins = $conn->prepare("
-        INSERT IGNORE INTO request_signatures (request_id, office_id, status)
-        VALUES (?, ?, 'pending')
-    ");
-    while ($o = $offices->fetch_assoc()) {
-        $ins->bind_param("ii", $requestId, $o['office_id']);
-        $ins->execute();
+    $check->bind_param("i", $requestId);
+    $check->execute();
+    $exists = $check->get_result()->fetch_assoc();
+    $check->close();
+    
+    if ($exists) {
+        return; // Already has signature row
     }
+    
+    // Create ONE signature row (office_id = 1 as default)
+    $ins = $conn->prepare("
+        INSERT INTO request_signatures (request_id, office_id, status)
+        VALUES (?, 1, 'pending')
+    ");
+    $ins->bind_param("i", $requestId);
+    $ins->execute();
     $ins->close();
 }
 
 /**
- * Return all signature rows for a request with office + signer info.
+ * Return signature row for a request (simplified)
  */
 function getSignatureRows(mysqli $conn, int $requestId): array
 {
@@ -46,47 +45,44 @@ function getSignatureRows(mysqli $conn, int $requestId): array
             rs.signed_at,
             rs.remarks,
             rs.signed_by,
-            so.id           AS office_id,
-            so.office_name,
-            so.office_code,
-            sr.order_no,
-            sr.role_label,
+            'Signature Required' AS office_name,
             CONCAT(u.first_name,' ',u.last_name) AS signed_by_name
         FROM   request_signatures rs
-        JOIN   signature_offices  so ON rs.office_id = so.id
-        LEFT JOIN signatory_roles sr ON sr.role_name = so.office_code
-                                     AND sr.document_type_id = (
-                                         SELECT document_type_id
-                                         FROM   document_requests
-                                         WHERE  id = rs.request_id LIMIT 1
-                                     )
         LEFT JOIN users u ON rs.signed_by = u.id
         WHERE  rs.request_id = ?
-        ORDER  BY COALESCE(sr.order_no, 99) ASC
+        LIMIT 1
     ");
     $stmt->bind_param("i", $requestId);
     $stmt->execute();
-    $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    $result = $stmt->get_result();
+    $rows = [];
+    while ($row = $result->fetch_assoc()) {
+        $rows[] = $row;
+    }
     $stmt->close();
     return $rows;
 }
 
 /**
- * If all request_signatures are 'signed', auto-approve the request.
+ * Auto-approve request after ONE signature.
  * Returns true if auto-approved.
  */
 function checkAndAutoApprove(mysqli $conn, int $requestId): bool
 {
+    // Check if request has been signed (ANY signature)
     $stmt = $conn->prepare("
-        SELECT COUNT(*) AS c FROM request_signatures
-        WHERE request_id = ? AND status != 'signed'
+        SELECT status FROM request_signatures
+        WHERE request_id = ? LIMIT 1
     ");
     $stmt->bind_param("i", $requestId);
     $stmt->execute();
-    $pending = (int) $stmt->get_result()->fetch_assoc()['c'];
+    $row = $stmt->get_result()->fetch_assoc();
     $stmt->close();
 
-    if ($pending > 0) return false;
+    // If not signed yet, return false
+    if (!$row || $row['status'] !== 'signed') {
+        return false;
+    }
 
     // Fetch request details
     $info = $conn->prepare("
@@ -101,7 +97,9 @@ function checkAndAutoApprove(mysqli $conn, int $requestId): bool
     $req = $info->get_result()->fetch_assoc();
     $info->close();
 
-    if (!$req || $req['status'] !== 'for_signature') return false;
+    if (!$req || $req['status'] !== 'for_signature') {
+        return false;
+    }
 
     $days = max(1, (int) $req['processing_days']);
 
@@ -122,15 +120,15 @@ function checkAndAutoApprove(mysqli $conn, int $requestId): bool
     $log = $conn->prepare("
         INSERT INTO request_logs (request_id, changed_by, old_status, new_status, notes)
         VALUES (?, 1, 'for_signature', 'approved',
-                'All office signatures obtained — auto-approved by system.')
+                'Document signed and approved by signatory staff.')
     ");
     $log->bind_param("i", $requestId);
     $log->execute();
     $log->close();
 
     // Notify student
-    $msg = "All signatures for your request {$req['request_code']} ({$req['doc_name']}) are complete. "
-         . "Your request is now APPROVED and will be processed soon.";
+    $msg = "✅ Your request {$req['request_code']} ({$req['doc_name']}) has been signed and APPROVED! "
+         . "Your document will now be processed.";
     $notify = $conn->prepare("INSERT INTO notifications (user_id, message) VALUES (?, ?)");
     $notify->bind_param("is", $req['user_id'], $msg);
     $notify->execute();
@@ -140,113 +138,193 @@ function checkAndAutoApprove(mysqli $conn, int $requestId): bool
 }
 
 /**
- * Sign a request_signatures row.
- * Validates office match via users.signature_office_id.
+ * Sign a request - ANY signatory can sign (no office matching)
  */
 function signRequestRow(mysqli $conn, int $sigRowId, int $signerUserId, string $remarks = ''): array
 {
+    // Get the signature row
     $stmt = $conn->prepare("
-        SELECT rs.id, rs.request_id, rs.office_id, rs.status AS sig_status,
-               dr.status AS req_status, dr.request_code,
-               u.signature_office_id AS signer_office_id
+        SELECT rs.id, rs.request_id, rs.status AS sig_status,
+               dr.status AS req_status, dr.request_code
         FROM   request_signatures rs
         JOIN   document_requests  dr ON rs.request_id = dr.id
-        JOIN   users              u  ON u.id = ?
         WHERE  rs.id = ?
         LIMIT  1
     ");
-    $stmt->bind_param("ii", $signerUserId, $sigRowId);
+    $stmt->bind_param("i", $sigRowId);
     $stmt->execute();
     $row = $stmt->get_result()->fetch_assoc();
     $stmt->close();
 
-    if (!$row)
-        return ['success'=>false,'auto_approved'=>false,'error'=>'Record not found.'];
-    if ($row['sig_status'] === 'signed')
-        return ['success'=>false,'auto_approved'=>false,'error'=>'Already signed.'];
-    if ($row['req_status'] !== 'for_signature')
-        return ['success'=>false,'auto_approved'=>false,'error'=>'Request is not in the signature stage.'];
-    if ((int)$row['signer_office_id'] !== (int)$row['office_id'])
-        return ['success'=>false,'auto_approved'=>false,'error'=>'This signature is not assigned to your office.'];
+    if (!$row) {
+        return ['success' => false, 'auto_approved' => false, 'error' => 'Signature record not found.'];
+    }
+    
+    if ($row['sig_status'] === 'signed') {
+        return ['success' => false, 'auto_approved' => false, 'error' => 'This request has already been signed.'];
+    }
+    
+    if ($row['req_status'] !== 'for_signature') {
+        return ['success' => false, 'auto_approved' => false, 'error' => 'Request is not in the signature stage.'];
+    }
 
+    // NO office matching check - ANY signatory can sign
+
+    // Update signature row to signed
     $upd = $conn->prepare("
         UPDATE request_signatures
-        SET status='signed', signed_by=?, signed_at=NOW(), remarks=?
-        WHERE id=?
+        SET status = 'signed', signed_by = ?, signed_at = NOW(), remarks = ?
+        WHERE id = ?
     ");
     $upd->bind_param("isi", $signerUserId, $remarks, $sigRowId);
     $upd->execute();
     $upd->close();
 
+    // Auto-approve the request
     $autoApproved = checkAndAutoApprove($conn, (int)$row['request_id']);
 
-    return ['success'=>true,'auto_approved'=>$autoApproved,'request_id'=>(int)$row['request_id'],'error'=>null];
+    return [
+        'success' => true, 
+        'auto_approved' => $autoApproved, 
+        'request_id' => (int)$row['request_id'], 
+        'error' => null
+    ];
 }
 
 /**
- * Reject a signature — cancels the entire request.
+ * Reject a signature - ANY signatory can reject (no office matching)
  */
 function rejectSignatureRow(mysqli $conn, int $sigRowId, int $signerUserId, string $reason): array
 {
     $stmt = $conn->prepare("
-        SELECT rs.request_id, rs.office_id, so.office_name,
-               dr.user_id, dr.request_code, dr.status AS req_status,
-               u.signature_office_id AS signer_office_id
+        SELECT rs.request_id, dr.user_id, dr.request_code, dr.status AS req_status
         FROM   request_signatures rs
-        JOIN   signature_offices  so ON rs.office_id = so.id
         JOIN   document_requests  dr ON rs.request_id = dr.id
-        JOIN   users              u  ON u.id = ?
         WHERE  rs.id = ? LIMIT 1
     ");
-    $stmt->bind_param("ii", $signerUserId, $sigRowId);
+    $stmt->bind_param("i", $sigRowId);
     $stmt->execute();
     $row = $stmt->get_result()->fetch_assoc();
     $stmt->close();
 
-    if (!$row) return ['success'=>false,'error'=>'Record not found.'];
-    if ($row['req_status'] !== 'for_signature') return ['success'=>false,'error'=>'Not in signature stage.'];
-    if ((int)$row['signer_office_id'] !== (int)$row['office_id']) return ['success'=>false,'error'=>'Not your office.'];
+    if (!$row) {
+        return ['success' => false, 'error' => 'Record not found.'];
+    }
+    
+    if ($row['req_status'] !== 'for_signature') {
+        return ['success' => false, 'error' => 'Request is not in signature stage.'];
+    }
 
-    $upd = $conn->prepare("UPDATE request_signatures SET status='rejected',signed_by=?,signed_at=NOW(),remarks=? WHERE id=?");
-    $upd->bind_param("isi",$signerUserId,$reason,$sigRowId);
-    $upd->execute(); $upd->close();
+    // NO office matching check - ANY signatory can reject
 
-    $note = "[{$row['office_name']}] Rejected: {$reason}";
-    $cancel = $conn->prepare("UPDATE document_requests SET status='cancelled',remarks=?,updated_at=NOW() WHERE id=?");
-    $cancel->bind_param("si",$note,$row['request_id']);
-    $cancel->execute(); $cancel->close();
+    // Update signature status to rejected
+    $upd = $conn->prepare("
+        UPDATE request_signatures 
+        SET status = 'rejected', signed_by = ?, signed_at = NOW(), remarks = ? 
+        WHERE id = ?
+    ");
+    $upd->bind_param("isi", $signerUserId, $reason, $sigRowId);
+    $upd->execute();
+    $upd->close();
 
-    $log = $conn->prepare("INSERT INTO request_logs (request_id,changed_by,old_status,new_status,notes) VALUES (?,?,'for_signature','cancelled',?)");
-    $log->bind_param("iis",$row['request_id'],$signerUserId,$note);
-    $log->execute(); $log->close();
+    // Cancel the request
+    $cancel = $conn->prepare("
+        UPDATE document_requests 
+        SET status = 'cancelled', remarks = ?, updated_at = NOW() 
+        WHERE id = ?
+    ");
+    $cancel->bind_param("si", $reason, $row['request_id']);
+    $cancel->execute();
+    $cancel->close();
 
-    $msg = "Your request {$row['request_code']} was rejected by {$row['office_name']}. Reason: {$reason}. Please contact the Registrar.";
-    $notify = $conn->prepare("INSERT INTO notifications (user_id,message) VALUES (?,?)");
-    $notify->bind_param("is",$row['user_id'],$msg);
-    $notify->execute(); $notify->close();
+    // Log the action
+    $log = $conn->prepare("
+        INSERT INTO request_logs (request_id, changed_by, old_status, new_status, notes) 
+        VALUES (?, ?, 'for_signature', 'cancelled', ?)
+    ");
+    $log->bind_param("iis", $row['request_id'], $signerUserId, $reason);
+    $log->execute();
+    $log->close();
 
-    return ['success'=>true,'error'=>null];
+    // Notify student
+    $msg = "❌ Your request {$row['request_code']} was rejected. Reason: {$reason}. Please contact the Registrar's Office.";
+    $notify = $conn->prepare("INSERT INTO notifications (user_id, message) VALUES (?, ?)");
+    $notify->bind_param("is", $row['user_id'], $msg);
+    $notify->execute();
+    $notify->close();
+
+    return ['success' => true, 'error' => null];
 }
 
-/** Counts for the signatory dashboard header stats. */
-function getSignatoryStats(mysqli $conn, int $officeId): array
+/**
+ * Counts for the signatory dashboard header stats (ALL signatories)
+ */
+function getSignatoryStats(mysqli $conn, int $officeId = null): array
 {
     $stmt = $conn->prepare("
         SELECT
-            SUM(rs.status='pending' AND dr.status='for_signature') AS pending_cnt,
-            SUM(rs.status='signed')   AS signed_cnt,
-            SUM(rs.status='rejected') AS rejected_cnt
+            SUM(CASE WHEN rs.status = 'pending' AND dr.status = 'for_signature' THEN 1 ELSE 0 END) AS pending_cnt,
+            SUM(CASE WHEN rs.status = 'signed' THEN 1 ELSE 0 END) AS signed_cnt,
+            SUM(CASE WHEN rs.status = 'rejected' THEN 1 ELSE 0 END) AS rejected_cnt
         FROM   request_signatures rs
         JOIN   document_requests  dr ON rs.request_id = dr.id
-        WHERE  rs.office_id = ?
     ");
-    $stmt->bind_param("i",$officeId);
     $stmt->execute();
     $s = $stmt->get_result()->fetch_assoc();
     $stmt->close();
+    
     return [
-        'pending'  => (int)($s['pending_cnt']  ?? 0),
-        'signed'   => (int)($s['signed_cnt']   ?? 0),
+        'pending'  => (int)($s['pending_cnt'] ?? 0),
+        'signed'   => (int)($s['signed_cnt'] ?? 0),
         'rejected' => (int)($s['rejected_cnt'] ?? 0),
     ];
 }
+
+/**
+ * Alias function for backward compatibility with signature_helper.php
+ */
+function createSignatureRoutes(mysqli $conn, int $requestId): bool
+{
+    // Get document_type_id from the request
+    $stmt = $conn->prepare("
+        SELECT document_type_id FROM document_requests WHERE id = ?
+    ");
+    $stmt->bind_param("i", $requestId);
+    $stmt->execute();
+    $result = $stmt->get_result();
+    $request = $result->fetch_assoc();
+    $stmt->close();
+    
+    if (!$request) {
+        return false;
+    }
+    
+    spawnSignatureRows($conn, $requestId, $request['document_type_id']);
+    return true;
+}
+
+/**
+ * Get signature progress for a request
+ */
+function getSignatureProgress(mysqli $conn, int $requestId): array
+{
+    $signatures = getSignatureRows($conn, $requestId);
+    
+    $signedCount = 0;
+    $totalCount = count($signatures);
+    
+    foreach ($signatures as $sig) {
+        if ($sig['status'] === 'signed') {
+            $signedCount++;
+        }
+    }
+    
+    return [
+        'signatures' => $signatures,
+        'signed_count' => $signedCount,
+        'total_count' => $totalCount,
+        'is_complete' => ($signedCount === $totalCount && $totalCount > 0),
+        'progress_percent' => $totalCount > 0 ? round(($signedCount / $totalCount) * 100) : 0
+    ];
+}
+?>

@@ -15,7 +15,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $conn = getConnection();
 
         $stmt = $conn->prepare("
-            SELECT id, first_name, last_name, email, password, role, status
+            SELECT id, first_name, last_name, email, password, role, status, signature_office_id
             FROM users WHERE email = ?
         ");
         $stmt->bind_param("s", $email);
@@ -40,10 +40,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $_SESSION['user_name']  = $user['first_name'] . ' ' . $user['last_name'];
                     $_SESSION['user_email'] = $user['email'];
                     $_SESSION['user_role']  = $user['role'];
+                    
+                    // ADDED: Store signature_office_id for signatory users
+                    if ($user['role'] === 'signatory') {
+                        $_SESSION['signature_office_id'] = $user['signature_office_id'];
+                    }
 
                     // Redirect based on role
                     if (in_array($user['role'], ['admin', 'registrar'])) {
                         header('Location: ' . SITE_URL . '/admin/dashboard.php');
+                    } elseif ($user['role'] === 'signatory') {
+                        // ADDED: Redirect signatory users to their dashboard
+                        header('Location: ' . SITE_URL . '/signatory/dashboard.php');
                     } elseif ($user['role'] === 'student') {
                         header('Location: ' . SITE_URL . '/student/dashboard.php');
                     } elseif ($user['role'] === 'alumni') {
@@ -324,8 +332,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
 
         .register-link a:hover { text-decoration: underline; }
-
-    
     </style>
 </head>
 <body>

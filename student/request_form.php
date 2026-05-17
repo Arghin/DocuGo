@@ -1,7 +1,7 @@
 <?php
 require_once '../includes/config.php';
 require_once '../includes/request_helper.php';
-require_once '../includes/signature_helper.php'; // ADDED: Required for createSignatureWorkflow()
+require_once '../includes/signature_workflow.php';
 requireLogin();
 
 if (isAdmin()) {
@@ -149,32 +149,36 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !isset($_POST['ajax_mark_read']) &&
                     $upd->execute();
                     $upd->close();
 
-                    // Create signature workflow (FIXED: function exists now)
-                    if (function_exists('createSignatureWorkflow')) {
-                        createSignatureWorkflow($conn, $requestId);
+                    // Create signature workflow using spawnSignatureRows from signature_workflow.php
+                    if (function_exists('spawnSignatureRows')) {
+                        spawnSignatureRows($conn, $requestId, $formData['document_type_id']);
                     } else {
-                        error_log("createSignatureWorkflow function not found");
+                        error_log("spawnSignatureRows function not found - check signature_workflow.php");
                     }
 
                     // Notify signatory offices
                     $officeStaff = $conn->query("
-                        SELECT DISTINCT u.id, u.first_name, u.last_name, u.office_role
+                        SELECT DISTINCT u.id, u.first_name, u.last_name, u.signatory_role
                         FROM users u
                         WHERE u.role = 'signatory'
                         AND u.status = 'active'
                     ");
 
+                    $signLink = SITE_URL . "/signatory/dashboard.php";
                     while ($staff = $officeStaff->fetch_assoc()) {
                         sendNotification($conn, $staff['id'],
-                            "✍️ Signature required for document request {$requestCode} from {$user['first_name']} {$user['last_name']}. Please review and sign."
+                            "✍️ Signature required for document request {$requestCode} from {$user['first_name']} {$user['last_name']}.\n\n" .
+                            "📋 Click here to sign: {$signLink}"
                         );
                     }
                 } else {
                     // Notify admins/registrar for approval
                     $admins = $conn->query("SELECT id FROM users WHERE role IN ('admin','registrar') AND status='active' LIMIT 5");
+                    $adminLink = SITE_URL . "/admin/dashboard.php";
                     while ($a = $admins->fetch_assoc()) {
                         sendNotification($conn, $a['id'],
-                            "📄 New document request {$requestCode} submitted by {$user['first_name']} {$user['last_name']}."
+                            "📄 New document request {$requestCode} submitted by {$user['first_name']} {$user['last_name']}.\n\n" .
+                            "📋 Click here to review: {$adminLink}"
                         );
                     }
                 }
@@ -466,10 +470,16 @@ $initial   = strtoupper(substr($user['first_name'], 0, 1));
             white-space: nowrap;
         }
         .chip-avatar {
-            width: 26px; height: 26px; border-radius: 50%;
-            background: #1a56db; color: #fff;
-            display: flex; align-items: center; justify-content: center;
-            font-size: 0.75rem; font-weight: 800; flex-shrink: 0;
+            width: 26px; height: 26px;
+            border-radius: 50%;
+            background: #1a56db;
+            color: #fff;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.75rem;
+            font-weight: 800;
+            flex-shrink: 0;
         }
         .user-chip strong { color: #111827; font-weight: 700; }
 
@@ -1207,7 +1217,6 @@ function selectDoc(id, fee, name, requiresSig) {
     selectedName = name;
     updateFee();
     
-    // Optional: Show signature requirement message
     if (requiresSig === 1) {
         console.log('This document requires office signatures');
     }
