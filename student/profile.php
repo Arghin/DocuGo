@@ -28,6 +28,13 @@ if (isset($_GET['ajax_unread_count'])) {
     echo json_encode(['count' => (int)$s->get_result()->fetch_assoc()['c']]);
     $s->close(); exit();
 }
+if (isset($_GET['ajax_notif_list'])) {
+    $s = $conn->prepare("SELECT id, message, is_read, created_at FROM notifications WHERE user_id=? ORDER BY created_at DESC LIMIT 10");
+    $s->bind_param("i", $userId);
+    $s->execute();
+    echo json_encode($s->get_result()->fetch_all(MYSQLI_ASSOC));
+    $s->close(); exit();
+}
 
 /* ── Detect optional columns ────────────────────────────── */
 function columnExists($conn, $table, $col) {
@@ -189,8 +196,9 @@ if ($isAlumni) {
     $tracerDone = $tS->num_rows > 0; $tS->close();
 }
 
+$conn->close();
 
-function e($v) { return htmlspecialchars($v ?? ''); }
+function escape($v) { return htmlspecialchars($v ?? ''); }
 
 $roleLabel   = ucfirst($role);
 $roleIcon    = ['student'=>'🎓','alumni'=>'👨‍🎓','registrar'=>'📋','admin'=>'🛡️'][$role] ?? '👤';
@@ -204,159 +212,451 @@ $initial     = strtoupper(substr($user['first_name'], 0, 1));
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>My Profile — DocuGo</title>
+    <title>My Profile — ADFC DocuGo</title>
+    <link href="https://fonts.googleapis.com/css2?family=Sora:wght@300;400;600;700;800&family=DM+Sans:ital,wght@0,300;0,400;0,500;1,300&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
     <style>
-        /* ─── Reset & Base ────────────────────────────── */
-        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+        /* ========== THEME VARIABLES ========== */
+        :root {
+            --primary:    #1a3ec7;
+            --primary-dk: #1230a0;
+            --accent:     #3b6bff;
+            --accent2:    #6b9fff;
+            --bg:         #080e28;
+            --bg2:        #0b1535;
+            --surface:    rgba(255,255,255,0.05);
+            --surface-hv: rgba(255,255,255,0.08);
+            --border:     rgba(255,255,255,0.08);
+            --border-hv:  rgba(59,107,255,0.25);
+            --text:       #dce6f8;
+            --text-muted: #7a96c4;
+            --text-dim:   #4a6190;
+            --green:      #4cd98a;
+            --gold:       #ffd700;
+            --purple:     #a78bfa;
+            --red:        #f87171;
+            --blue:       #60a5fa;
+            --radius-sm:  8px;
+            --radius-md:  12px;
+            --radius-lg:  16px;
+            --radius-xl:  24px;
+            --sidebar-width: 260px;
+            --ease-out:   cubic-bezier(0.16, 1, 0.3, 1);
+            --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+            
+            --sidebar-bg: #0f2a6b;
+            --sidebar-border: rgba(255,255,255,0.1);
+            --sidebar-text: #b8c9f0;
+            --sidebar-text-hover: #ffffff;
+            --sidebar-active-bg: rgba(59,107,255,0.25);
+            --sidebar-active-color: #ffffff;
+            --sidebar-section: #8eabff;
+        }
+
+        body.light {
+            --bg:         #eef2ff;
+            --bg2:        #e2e9ff;
+            --bg3:        #d8e2ff;
+            --surface:    rgba(255,255,255,0.6);
+            --surface-hv: rgba(255,255,255,0.85);
+            --border:     rgba(26,62,199,0.1);
+            --border-hv:  rgba(26,62,199,0.25);
+            --text:       #0c1836;
+            --text-muted: #3d5a92;
+            --text-dim:   #7a96c4;
+            
+            --sidebar-bg: #2d4ed6;
+            --sidebar-border: rgba(255,255,255,0.15);
+            --sidebar-text: #e0e8ff;
+            --sidebar-text-hover: #ffffff;
+            --sidebar-active-bg: rgba(255,255,255,0.2);
+            --sidebar-active-color: #ffffff;
+            --sidebar-section: #c7d5ff;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
         body {
-            font-family: 'Segoe UI', Arial, sans-serif;
-            background: #f0f4f8; color: #111827;
-            min-height: 100vh; display: flex;
-            font-size: 14px; line-height: 1.5;
+            font-family: 'DM Sans', sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            transition: background 0.3s, color 0.3s;
+            overflow-x: hidden;
+            display: flex;
         }
 
-        /* ─── Sidebar ─────────────────────────────────── */
+        /* ========== SIDEBAR ========== */
         .sidebar {
-            width: 220px; background: #1a56db; color: #fff;
-            min-height: 100vh; flex-shrink: 0;
-            display: flex; flex-direction: column;
-            position: fixed; top: 0; left: 0; height: 100%; z-index: 100;
+            position: fixed;
+            left: 0;
+            top: 0;
+            width: var(--sidebar-width);
+            height: 100vh;
+            background: var(--sidebar-bg);
+            border-right: 1px solid var(--sidebar-border);
+            display: flex;
+            flex-direction: column;
+            z-index: 100;
+            transition: transform 0.3s var(--ease-out), background 0.3s;
         }
+
         .sidebar-brand {
-            padding: 1.4rem 1.2rem; font-size: 1.5rem; font-weight: 800;
-            border-bottom: 1px solid rgba(255,255,255,0.15);
-            letter-spacing: -0.5px; line-height: 1.2;
+            padding: 1.5rem 1.2rem;
+            border-bottom: 1px solid var(--sidebar-border);
+            margin-bottom: 1rem;
         }
-        .sidebar-brand small {
-            display: block; font-size: 0.68rem; font-weight: 400;
-            opacity: 0.7; margin-top: 3px; text-transform: uppercase; letter-spacing: 0.06em;
+
+        .brand-logo {
+            display: flex;
+            align-items: center;
+            gap: 12px;
         }
-        .sidebar-menu { padding: 1rem 0; flex: 1; overflow-y: auto; }
-        .menu-label {
-            font-size: 0.65rem; font-weight: 700; text-transform: uppercase;
-            letter-spacing: 0.1em; opacity: 0.5; padding: 0.8rem 1.2rem 0.3rem;
+
+        .brand-logo img {
+            width: 48px;
+            height: 48px;
+            object-fit: contain;
+            border-radius: 12px;
+            transition: transform 0.3s var(--ease-spring);
         }
+
+        .brand-logo img:hover {
+            transform: rotate(-5deg) scale(1.05);
+        }
+
+        .brand-text {
+            flex: 1;
+        }
+
+        .brand-name {
+            font-family: 'Sora', sans-serif;
+            font-weight: 800;
+            font-size: 0.9rem;
+            color: white;
+            line-height: 1.2;
+        }
+
+        .brand-sub {
+            font-size: 0.55rem;
+            color: rgba(255,255,255,0.7);
+            margin-top: 3px;
+            letter-spacing: 0.3px;
+        }
+
+        .sidebar-menu {
+            flex: 1;
+            padding: 0 0.8rem;
+        }
+
+        .menu-section {
+            font-size: 0.65rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: var(--sidebar-section);
+            padding: 0.8rem 0.8rem 0.5rem;
+        }
+
         .menu-item {
-            display: flex; align-items: center; gap: 0.65rem;
-            padding: 0.6rem 1.2rem; color: rgba(255,255,255,0.82);
-            text-decoration: none; font-size: 0.855rem; font-weight: 500;
-            transition: background 0.15s, color 0.15s;
-            border-left: 3px solid transparent;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 0.7rem 0.8rem;
+            border-radius: var(--radius-sm);
+            color: var(--sidebar-text);
+            text-decoration: none;
+            font-size: 0.85rem;
+            font-weight: 500;
+            transition: all 0.2s;
+            margin-bottom: 2px;
         }
-        .menu-item:hover { background: rgba(255,255,255,0.1); color: #fff; }
-        .menu-item.active { background: rgba(255,255,255,0.15); color: #fff; border-left-color: #fff; font-weight: 600; }
-        .menu-item .icon { font-size: 1rem; width: 20px; text-align: center; flex-shrink: 0; }
+
+        .menu-item:hover {
+            background: var(--sidebar-active-bg);
+            color: var(--sidebar-text-hover);
+        }
+
+        .menu-item.active {
+            background: var(--sidebar-active-bg);
+            color: var(--sidebar-active-color);
+            border-left: 2px solid white;
+        }
+
+        .menu-icon {
+            font-size: 1.1rem;
+            width: 24px;
+        }
+
+        .menu-badge {
+            margin-left: auto;
+            background: rgba(255,255,255,0.25);
+            color: white;
+            font-size: 0.65rem;
+            font-weight: 700;
+            padding: 2px 8px;
+            border-radius: 20px;
+        }
+
+        .menu-badge.yellow { background: var(--gold); color: #1a1a2e; }
+
         .sidebar-footer {
-            padding: 1rem 1.2rem; border-top: 1px solid rgba(255,255,255,0.15); font-size: 0.8rem;
+            padding: 1rem 0.8rem;
+            border-top: 1px solid var(--sidebar-border);
+            margin-top: auto;
         }
+
         .sidebar-footer a {
-            color: rgba(255,255,255,0.82); text-decoration: none;
-            display: flex; align-items: center; gap: 0.5rem; transition: color 0.15s;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 0.7rem 0.8rem;
+            color: var(--sidebar-text);
+            text-decoration: none;
+            border-radius: var(--radius-sm);
+            transition: all 0.2s;
         }
-        .sidebar-footer a:hover { color: #fff; }
 
-        /* ─── Main ────────────────────────────────────── */
-        .main { margin-left: 220px; flex: 1; padding: 2rem; min-width: 0; }
+        .sidebar-footer a:hover {
+            background: var(--sidebar-active-bg);
+            color: var(--red);
+        }
 
-        /* ─── Topbar ──────────────────────────────────── */
+        /* ========== MAIN CONTENT ========== */
+        .main {
+            margin-left: var(--sidebar-width);
+            padding: 1.5rem 2rem;
+            min-height: 100vh;
+            flex: 1;
+        }
+
+        /* Topbar */
         .topbar {
-            display: flex; align-items: center; justify-content: space-between;
-            margin-bottom: 1.6rem; gap: 1rem; flex-wrap: wrap;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 1.6rem;
+            gap: 1rem;
+            flex-wrap: wrap;
         }
-        .topbar h1 { font-size: 1.35rem; font-weight: 800; color: #111827; }
-        .topbar-right { display: flex; align-items: center; gap: 0.65rem; flex-shrink: 0; }
 
-        /* ─── Notification Bell ───────────────────────── */
-        .notif-wrap { position: relative; }
-        .notif-btn {
-            position: relative; width: 40px; height: 40px; border-radius: 50%;
-            background: #fff; border: 2px solid #e5e7eb;
-            display: flex; align-items: center; justify-content: center;
-            cursor: pointer; font-size: 1.1rem;
-            transition: background 0.15s, border-color 0.2s, transform 0.15s;
-            box-shadow: 0 2px 6px rgba(0,0,0,0.07); outline: none; padding: 0;
+        .topbar h1 {
+            font-family: 'Sora', sans-serif;
+            font-size: 1.35rem;
+            font-weight: 800;
+            color: var(--text);
         }
-        .notif-btn:hover { background: #f0f4ff; border-color: #1a56db; transform: scale(1.06); }
-        .notif-btn.has-unread { border-color: #1a56db; animation: bellShake 0.9s ease-in-out 0.4s; }
+
+        .topbar-right {
+            display: flex;
+            align-items: center;
+            gap: 0.65rem;
+            flex-shrink: 0;
+        }
+
+        /* Notification Bell - Golden */
+        .notif-wrap { position: relative; }
+
+        .notif-btn {
+            position: relative;
+            width: 40px; height: 40px;
+            border-radius: 50%;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            font-size: 1.2rem;
+            transition: transform 0.2s, border-color 0.2s;
+            color: var(--gold);
+        }
+
+        .notif-btn:hover {
+            transform: scale(1.05);
+            border-color: var(--gold);
+        }
+
+        .notif-btn.has-unread {
+            border-color: var(--gold);
+            animation: bellShake 0.9s ease-in-out 0.4s;
+        }
+
         @keyframes bellShake {
             0%,100%{transform:rotate(0)} 20%{transform:rotate(-14deg)}
             40%{transform:rotate(14deg)} 60%{transform:rotate(-9deg)} 80%{transform:rotate(9deg)}
         }
+
         .notif-badge {
             position: absolute; top: -4px; right: -4px;
-            background: #dc2626; color: #fff; font-size: 0.6rem; font-weight: 800;
+            background: var(--red); color: #fff;
+            font-size: 0.6rem; font-weight: 800;
             min-width: 18px; height: 18px; border-radius: 9px;
             display: flex; align-items: center; justify-content: center;
-            border: 2px solid #f0f4f8; padding: 0 3px; line-height: 1;
-            transition: opacity 0.25s, transform 0.25s;
+            padding: 0 4px;
         }
-        .notif-badge.hidden { opacity: 0; transform: scale(0); pointer-events: none; }
+
+        .notif-badge.hidden { display: none; }
+
+        /* Notification panel */
         .notif-panel {
-            position: absolute; top: calc(100% + 10px); right: 0; width: 340px;
-            background: #fff; border-radius: 14px;
-            box-shadow: 0 12px 40px rgba(0,0,0,0.13), 0 2px 8px rgba(0,0,0,0.05);
-            border: 1px solid #e5e7eb; z-index: 500; overflow: hidden;
-            opacity: 0; transform: translateY(-6px) scale(0.98); pointer-events: none;
+            position: absolute; top: calc(100% + 10px); right: 0;
+            width: 360px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
+            box-shadow: 0 12px 40px rgba(0,0,0,0.3);
+            z-index: 500; overflow: hidden;
+            opacity: 0; transform: translateY(-6px);
+            pointer-events: none;
             transition: opacity 0.18s ease, transform 0.18s ease;
+            backdrop-filter: blur(10px);
         }
-        .notif-panel.open { opacity: 1; transform: translateY(0) scale(1); pointer-events: all; }
+
+        .notif-panel.open {
+            opacity: 1; transform: translateY(0);
+            pointer-events: all;
+        }
+
         .notif-panel::before {
             content: ''; position: absolute; top: -7px; right: 13px;
-            width: 13px; height: 13px; background: #fff;
-            border-left: 1px solid #e5e7eb; border-top: 1px solid #e5e7eb; transform: rotate(45deg);
+            width: 13px; height: 13px; background: var(--surface);
+            border-left: 1px solid var(--border); border-top: 1px solid var(--border);
+            transform: rotate(45deg);
         }
-        .notif-panel-header { display: flex; align-items: center; justify-content: space-between; padding: 0.9rem 1.1rem 0.8rem; border-bottom: 1px solid #f3f4f6; gap: 0.5rem; }
-        .notif-panel-title { font-size: 0.92rem; font-weight: 800; color: #111827; display: flex; align-items: center; gap: 0.45rem; }
-        .notif-count-pill { background: #1a56db; color: #fff; font-size: 0.62rem; font-weight: 800; padding: 2px 7px; border-radius: 10px; }
-        .mark-all-btn { font-size: 0.75rem; color: #1a56db; background: none; border: none; cursor: pointer; font-weight: 600; font-family: inherit; padding: 4px 8px; border-radius: 6px; transition: background 0.15s; white-space: nowrap; }
-        .mark-all-btn:hover { background: #eff6ff; }
-        .notif-list { max-height: 300px; overflow-y: auto; scrollbar-width: thin; scrollbar-color: #e2e8f0 transparent; }
+
+        .notif-panel-header {
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 0.9rem 1.1rem; border-bottom: 1px solid var(--border);
+        }
+
+        .notif-panel-title {
+            font-family: 'Sora', sans-serif;
+            font-size: 0.9rem; font-weight: 700; color: var(--text);
+            display: flex; align-items: center; gap: 0.45rem;
+        }
+
+        .notif-count-pill {
+            background: var(--gold); color: #1a1a2e;
+            font-size: 0.62rem; font-weight: 800;
+            padding: 2px 7px; border-radius: 10px;
+        }
+
+        .mark-all-btn {
+            font-size: 0.7rem; color: var(--accent2);
+            background: none; border: none; cursor: pointer;
+            font-weight: 600; padding: 4px 8px;
+            border-radius: var(--radius-sm);
+            transition: background 0.15s;
+        }
+        .mark-all-btn:hover { background: var(--surface-hv); }
+
+        .notif-list { max-height: 300px; overflow-y: auto; }
         .notif-list::-webkit-scrollbar { width: 4px; }
-        .notif-list::-webkit-scrollbar-thumb { background: #e2e8f0; border-radius: 4px; }
-        .notif-item { display: flex; align-items: flex-start; gap: 0.7rem; padding: 0.8rem 1.1rem; border-bottom: 1px solid #f9fafb; cursor: pointer; transition: background 0.12s; }
+        .notif-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+        .notif-item {
+            display: flex; align-items: flex-start; gap: 0.7rem;
+            padding: 0.8rem 1.1rem;
+            border-bottom: 1px solid var(--border);
+            cursor: pointer; transition: background 0.12s;
+        }
         .notif-item:last-child { border-bottom: none; }
-        .notif-item:hover { background: #f8faff; }
-        .notif-item.unread { background: #f0f7ff; }
-        .notif-item.unread:hover { background: #e0edff; }
-        .notif-item-icon { width: 34px; height: 34px; border-radius: 9px; display: flex; align-items: center; justify-content: center; font-size: 1rem; flex-shrink: 0; }
-        .type-ready{background:#d1fae5} .type-approved{background:#dbeafe} .type-process{background:#e0e7ff} .type-cancel{background:#fee2e2} .type-info{background:#f3f4f6}
+        .notif-item:hover { background: var(--surface-hv); }
+        .notif-item.unread { background: rgba(255,215,0,0.08); }
+
+        .notif-item-icon {
+            width: 34px; height: 34px; border-radius: var(--radius-md);
+            display: flex; align-items: center; justify-content: center;
+            font-size: 1rem; flex-shrink: 0;
+        }
+        .type-ready    { background: rgba(76,217,138,0.15); color: #4cd98a; }
+        .type-approved { background: rgba(96,165,250,0.15); color: #60a5fa; }
+        .type-process  { background: rgba(96,165,250,0.15); color: #60a5fa; }
+        .type-cancel   { background: rgba(248,113,113,0.15); color: #f87171; }
+        .type-info     { background: rgba(255,215,0,0.15); color: #ffd700; }
+
         .notif-item-body { flex: 1; min-width: 0; }
-        .notif-item-title { font-size: 0.815rem; font-weight: 600; color: #374151; margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-        .notif-item.unread .notif-item-title { font-weight: 800; color: #111827; }
-        .notif-item-msg { font-size: 0.765rem; color: #6b7280; line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-        .notif-item.unread .notif-item-msg { color: #374151; }
-        .notif-item-time { font-size: 0.695rem; color: #9ca3af; margin-top: 3px; }
-        .notif-unread-dot { width: 8px; height: 8px; border-radius: 50%; background: #1a56db; flex-shrink: 0; margin-top: 7px; }
+        .notif-item-title { font-size: 0.8rem; font-weight: 700; color: var(--text); margin-bottom: 2px; }
+        .notif-item-msg { font-size: 0.7rem; color: var(--text-muted); line-height: 1.4; }
+        .notif-item-time { font-size: 0.65rem; color: var(--text-dim); margin-top: 3px; }
+        .notif-unread-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--gold); flex-shrink: 0; margin-top: 7px; }
+
         .notif-empty { padding: 2rem 1rem; text-align: center; }
         .notif-empty .empty-emoji { font-size: 1.8rem; margin-bottom: 0.4rem; }
-        .notif-empty p { font-size: 0.8rem; color: #9ca3af; font-weight: 500; }
-        .notif-panel-footer { padding: 0.65rem 1.1rem; border-top: 1px solid #f3f4f6; text-align: center; background: #fafafa; }
-        .notif-panel-footer a { font-size: 0.8rem; color: #1a56db; text-decoration: none; font-weight: 700; }
+        .notif-empty p { font-size: 0.8rem; color: var(--text-dim); }
+
+        .notif-panel-footer {
+            padding: 0.65rem 1.1rem;
+            border-top: 1px solid var(--border);
+            text-align: center;
+        }
+        .notif-panel-footer a {
+            font-size: 0.75rem; color: var(--accent2);
+            text-decoration: none; font-weight: 600;
+        }
         .notif-panel-footer a:hover { text-decoration: underline; }
 
-        /* ─── User Chip ───────────────────────────────── */
+        /* User Chip */
         .user-chip {
             display: flex; align-items: center; gap: 0.5rem;
-            background: #fff; border: 1px solid #e5e7eb; border-radius: 20px;
-            padding: 0.38rem 0.85rem 0.38rem 0.45rem;
-            font-size: 0.82rem; color: #374151;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.06); white-space: nowrap;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 20px;
+            padding: 0.35rem 0.85rem 0.35rem 0.45rem;
+            font-size: 0.8rem; color: var(--text);
         }
         .chip-avatar {
-            width: 26px; height: 26px; border-radius: 50%;
-            background: #1a56db; color: #fff;
+            width: 28px; height: 28px;
+            border-radius: 50%;
+            background: var(--accent);
+            color: #fff;
             display: flex; align-items: center; justify-content: center;
-            font-size: 0.75rem; font-weight: 800; flex-shrink: 0; overflow: hidden;
+            font-size: 0.75rem; font-weight: 800;
+            overflow: hidden;
         }
         .chip-avatar img { width: 100%; height: 100%; object-fit: cover; }
-        .user-chip strong { color: #111827; font-weight: 700; }
 
-        /* ─── Alerts ──────────────────────────────────── */
-        .alert { padding: 0.85rem 1rem; border-radius: 8px; margin-bottom: 1.2rem; font-size: 0.875rem; font-weight: 500; }
-        .alert-success { background: #d1fae5; color: #065f46; border-left: 4px solid #059669; }
-        .alert-error   { background: #fee2e2; color: #991b1b; border-left: 4px solid #dc2626; }
+        /* Logout Button */
+        .logout-btn-top {
+            width: 38px; height: 38px;
+            border-radius: 50%;
+            background: rgba(248,113,113,0.15);
+            color: var(--red);
+            display: flex; align-items: center; justify-content: center;
+            text-decoration: none;
+            font-size: 1rem;
+            transition: transform 0.2s;
+        }
+        .logout-btn-top:hover { transform: scale(1.05); background: rgba(248,113,113,0.25); }
 
-        /* ─── Profile Grid ────────────────────────────── */
+        /* Theme Toggle */
+        .theme-toggle {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            width: 42px;
+            height: 42px;
+            border-radius: 50%;
+            background: var(--surface);
+            backdrop-filter: blur(12px);
+            border: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            color: var(--text);
+            font-size: 1.1rem;
+            z-index: 99;
+            transition: transform 0.2s;
+        }
+        .theme-toggle:hover { transform: scale(1.1); background: var(--surface-hv); }
+
+        /* Alert */
+        .alert { padding: 0.85rem 1rem; border-radius: var(--radius-md); margin-bottom: 1.2rem; font-size: 0.85rem; }
+        .alert-success { background: rgba(76,217,138,0.15); color: var(--green); border-left: 4px solid var(--green); }
+        .alert-error   { background: rgba(248,113,113,0.15); color: var(--red); border-left: 4px solid var(--red); }
+
+        /* Profile Grid */
         .profile-grid {
             display: grid;
             grid-template-columns: 300px 1fr;
@@ -364,21 +664,22 @@ $initial     = strtoupper(substr($user['first_name'], 0, 1));
             align-items: start;
         }
 
-        /* ─── Left Profile Card ───────────────────────── */
+        /* Profile Card */
         .profile-card {
-            background: #fff; border-radius: 12px;
-            box-shadow: 0 1px 4px rgba(0,0,0,0.06); overflow: hidden;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
+            overflow: hidden;
         }
 
-        /* Avatar section */
         .profile-card-top {
-            background: linear-gradient(135deg, #1a56db 0%, #1447c0 100%);
+            background: linear-gradient(135deg, var(--primary), var(--accent));
             padding: 1.8rem 1.2rem 1.4rem;
             text-align: center; color: #fff;
             position: relative;
         }
 
-        /* ─── Avatar with upload overlay ─────────────── */
+        /* Avatar */
         .avatar-wrap {
             position: relative;
             width: 88px; height: 88px;
@@ -413,16 +714,14 @@ $initial     = strtoupper(substr($user['first_name'], 0, 1));
             font-size: 0.65rem; color: #fff; font-weight: 700;
             line-height: 1.2; text-align: center; padding: 0 4px;
         }
-
         .avatar-overlay .cam-icon { font-size: 1.1rem; }
 
-        /* Hidden file input */
         #picInput { display: none; }
 
-        /* Remove button */
         .remove-pic-btn {
             display: inline-flex; align-items: center; gap: 3px;
-            background: rgba(255,255,255,0.18); border: 1px solid rgba(255,255,255,0.3);
+            background: rgba(255,255,255,0.18);
+            border: 1px solid rgba(255,255,255,0.3);
             color: #fff; font-size: 0.68rem; font-weight: 600;
             border-radius: 20px; padding: 3px 9px; cursor: pointer;
             font-family: inherit; transition: background 0.15s;
@@ -430,58 +729,70 @@ $initial     = strtoupper(substr($user['first_name'], 0, 1));
         }
         .remove-pic-btn:hover { background: rgba(255,255,255,0.28); }
 
-        .profile-name { font-size: 1.1rem; font-weight: 700; margin-bottom: 0.2rem; }
-        .profile-email { font-size: 0.78rem; opacity: 0.82; word-break: break-all; }
+        .profile-name { font-size: 1rem; font-weight: 700; margin-bottom: 0.2rem; }
+        .profile-email { font-size: 0.75rem; opacity: 0.82; word-break: break-all; }
         .profile-role-chip {
             display: inline-flex; align-items: center; gap: 4px;
-            background: rgba(255,255,255,0.2); border: 1px solid rgba(255,255,255,0.3);
+            background: rgba(255,255,255,0.2);
+            border: 1px solid rgba(255,255,255,0.3);
             padding: 3px 10px; border-radius: 20px;
-            font-size: 0.72rem; font-weight: 700; margin-top: 0.6rem;
+            font-size: 0.7rem; font-weight: 700; margin-top: 0.6rem;
         }
 
-        .profile-card-body { padding: 1.1rem 1.2rem; }
+        .profile-card-body { padding: 1rem 1.2rem; }
 
         .info-row {
             display: flex; justify-content: space-between; align-items: center;
-            padding: 0.55rem 0; border-bottom: 1px solid #f3f4f6; font-size: 0.835rem;
+            padding: 0.5rem 0; border-bottom: 1px solid var(--border);
+            font-size: 0.8rem;
         }
         .info-row:last-child { border-bottom: none; }
-        .info-label { color: #6b7280; font-weight: 600; font-size: 0.78rem; }
-        .info-value { color: #111827; font-weight: 500; text-align: right; }
+        .info-label { color: var(--text-muted); font-weight: 600; font-size: 0.75rem; }
+        .info-value { color: var(--text); font-weight: 500; text-align: right; }
 
-        /* Badges */
         .badge {
             display: inline-flex; align-items: center; gap: 4px;
-            padding: 3px 8px; border-radius: 10px; font-size: 0.72rem; font-weight: 700;
+            padding: 2px 8px; border-radius: 20px; font-size: 0.68rem; font-weight: 700;
         }
         .badge::before { content:''; width:6px; height:6px; border-radius:50%; }
-        .badge-green  { background:#d1fae5; color:#065f46; } .badge-green::before  { background:#059669; }
-        .badge-yellow { background:#fef3c7; color:#92400e; } .badge-yellow::before { background:#d97706; }
-        .badge-red    { background:#fee2e2; color:#991b1b; } .badge-red::before    { background:#dc2626; }
+        .badge-green  { background: rgba(76,217,138,0.15); color: #4cd98a; } .badge-green::before  { background: #4cd98a; }
+        .badge-yellow { background: rgba(251,191,36,0.15); color: #fbbf24; } .badge-yellow::before { background: #fbbf24; }
+        .badge-red    { background: rgba(248,113,113,0.15); color: #f87171; } .badge-red::before    { background: #f87171; }
 
         /* Stats */
-        .profile-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 0.6rem; margin-top: 0.9rem; }
-        .profile-stat { background: #f9fafb; border-radius: 8px; padding: 0.7rem; text-align: center; }
-        .profile-stat-value { font-size: 1.4rem; font-weight: 800; color: #111827; line-height: 1; }
-        .profile-stat-label { font-size: 0.7rem; color: #6b7280; margin-top: 3px; font-weight: 600; }
+        .profile-stats {
+            display: grid; grid-template-columns: 1fr 1fr;
+            gap: 0.6rem; margin-top: 0.9rem;
+        }
+        .profile-stat {
+            background: var(--bg2);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-md);
+            padding: 0.6rem;
+            text-align: center;
+        }
+        .profile-stat-value { font-family: 'Sora', sans-serif; font-size: 1.3rem; font-weight: 800; color: var(--text); line-height: 1; }
+        .profile-stat-label { font-size: 0.65rem; color: var(--text-muted); margin-top: 3px; font-weight: 600; }
 
-        /* Tracer banner */
+        /* Tracer Banner */
         .tracer-banner {
-            margin-top: 0.9rem; background: #eff6ff; border: 1px solid #bfdbfe;
-            border-radius: 8px; padding: 0.7rem 0.9rem;
-            font-size: 0.8rem; color: #1e40af;
+            margin-top: 0.9rem;
+            background: rgba(59,107,255,0.1);
+            border: 1px solid rgba(59,107,255,0.3);
+            border-radius: var(--radius-sm);
+            padding: 0.6rem 0.8rem;
+            font-size: 0.75rem; color: var(--accent2);
             display: flex; align-items: center; gap: 0.5rem;
         }
-        .tracer-banner a { color: #1a56db; font-weight: 700; text-decoration: none; margin-left: auto; white-space: nowrap; }
+        .tracer-banner a { color: var(--accent); font-weight: 700; text-decoration: none; margin-left: auto; white-space: nowrap; }
         .tracer-banner a:hover { text-decoration: underline; }
-        .tracer-done { background: #f0fdf4; border-color: #bbf7d0; color: #065f46; }
+        .tracer-done { background: rgba(76,217,138,0.1); border-color: rgba(76,217,138,0.3); color: var(--green); }
 
-        /* ─── Upload Progress Bar ─────────────────────── */
+        /* Upload Progress */
         .upload-progress {
-            display: none;
-            margin-top: 0.6rem;
+            display: none; margin-top: 0.6rem;
             background: rgba(255,255,255,0.2);
-            border-radius: 10px; overflow: hidden; height: 5px;
+            border-radius: 10px; overflow: hidden; height: 4px;
         }
         .upload-progress-bar {
             height: 100%; background: #fff;
@@ -489,68 +800,79 @@ $initial     = strtoupper(substr($user['first_name'], 0, 1));
             transition: width 0.3s ease;
         }
         .upload-status {
-            font-size: 0.7rem; color: rgba(255,255,255,0.85);
+            font-size: 0.65rem; color: rgba(255,255,255,0.85);
             margin-top: 4px; font-weight: 600;
         }
 
-        /* ─── Right Panel ─────────────────────────────── */
+        /* Right Panel */
         .right-panel { display: flex; flex-direction: column; gap: 1.2rem; }
 
         .section-card {
-            background: #fff; border-radius: 12px;
-            box-shadow: 0 1px 4px rgba(0,0,0,0.06); overflow: hidden;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
+            overflow: hidden;
         }
         .section-header {
-            padding: 0.9rem 1.2rem; border-bottom: 1px solid #f3f4f6;
+            padding: 0.9rem 1.2rem;
+            border-bottom: 1px solid var(--border);
             display: flex; align-items: center; gap: 0.6rem;
         }
-        .section-header h2 { font-size: 1rem; font-weight: 700; color: #111827; }
-        .section-icon { font-size: 1.1rem; }
+        .section-header h2 { font-family: 'Sora', sans-serif; font-size: 0.9rem; font-weight: 700; color: var(--text); }
+        .section-icon { font-size: 1rem; }
         .section-body { padding: 1.2rem; }
 
-        /* ─── Form ────────────────────────────────────── */
+        /* Form */
         .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
         .form-grid .full { grid-column: 1 / -1; }
         .form-group { display: flex; flex-direction: column; gap: 0.3rem; }
-        .form-label { font-size: 0.78rem; font-weight: 700; color: #374151; text-transform: uppercase; letter-spacing: 0.04em; }
+        .form-label {
+            font-size: 0.7rem; font-weight: 700; color: var(--text-muted);
+            text-transform: uppercase; letter-spacing: 0.04em;
+        }
         .form-input, .form-select, .form-textarea {
-            padding: 0.55rem 0.8rem; border: 1px solid #d1d5db; border-radius: 7px;
-            font-size: 0.875rem; color: #111827; background: #fff; font-family: inherit;
-            transition: border-color 0.15s, box-shadow 0.15s; width: 100%;
+            padding: 0.55rem 0.8rem;
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            font-size: 0.85rem; color: var(--text);
+            background: var(--bg2);
+            font-family: inherit;
+            transition: border-color 0.15s;
+            width: 100%;
         }
         .form-input:focus, .form-select:focus, .form-textarea:focus {
-            outline: none; border-color: #1a56db; box-shadow: 0 0 0 3px rgba(26,86,219,0.1);
+            outline: none; border-color: var(--accent);
+            box-shadow: 0 0 0 3px rgba(59,107,255,0.1);
         }
-        .form-input[readonly] { background: #f9fafb; color: #6b7280; cursor: not-allowed; }
+        .form-input[readonly] { background: var(--surface); color: var(--text-dim); cursor: not-allowed; }
         .form-textarea { resize: vertical; min-height: 75px; }
-        .form-hint { font-size: 0.73rem; color: #9ca3af; }
+        .form-hint { font-size: 0.65rem; color: var(--text-dim); margin-top: 0.25rem; }
 
         .form-footer {
             display: flex; justify-content: flex-end; gap: 0.6rem;
-            margin-top: 1.2rem; padding-top: 1rem; border-top: 1px solid #f3f4f6;
+            margin-top: 1rem; padding-top: 0.8rem; border-top: 1px solid var(--border);
         }
 
         /* Buttons */
         .btn {
-            padding: 0.55rem 1.1rem; border: none; border-radius: 7px;
-            font-size: 0.855rem; cursor: pointer; font-weight: 600; font-family: inherit;
-            transition: background 0.15s;
+            padding: 0.5rem 1rem; border: none; border-radius: var(--radius-sm);
+            font-size: 0.8rem; cursor: pointer; font-weight: 600; font-family: inherit;
+            transition: transform 0.2s;
             display: inline-flex; align-items: center; gap: 0.4rem; white-space: nowrap;
         }
-        .btn-primary   { background: #1a56db; color: #fff; }
-        .btn-primary:hover   { background: #1447c0; }
-        .btn-secondary { background: #f1f5f9; color: #374151; border: 1px solid #e2e8f0; }
-        .btn-secondary:hover { background: #e2e8f0; }
-        .btn-danger    { background: #fee2e2; color: #991b1b; border: 1px solid #fecaca; }
-        .btn-danger:hover    { background: #fecaca; }
+        .btn-primary   { background: linear-gradient(135deg, var(--primary), var(--accent)); color: #fff; }
+        .btn-primary:hover   { transform: translateY(-1px); opacity: 0.95; }
+        .btn-secondary { background: var(--surface); color: var(--text-muted); border: 1px solid var(--border); }
+        .btn-secondary:hover { background: var(--surface-hv); border-color: var(--accent); }
+        .btn-danger    { background: rgba(248,113,113,0.15); color: var(--red); border: 1px solid rgba(248,113,113,0.3); }
+        .btn-danger:hover    { background: rgba(248,113,113,0.25); }
 
         /* Password strength */
         .strength-wrap { margin-top: 0.35rem; }
-        .strength-bar-bg { height: 4px; border-radius: 4px; background: #f3f4f6; overflow: hidden; }
+        .strength-bar-bg { height: 4px; border-radius: 4px; background: var(--border); overflow: hidden; }
         .strength-bar    { height: 100%; border-radius: 4px; width: 0%; transition: width 0.3s, background 0.3s; }
-        .strength-text   { font-size: 0.73rem; font-weight: 700; margin-top: 3px; color: #9ca3af; }
+        .strength-text   { font-size: 0.7rem; font-weight: 700; margin-top: 3px; color: var(--text-dim); }
 
-        /* ─── Responsive ──────────────────────────────── */
         @media (max-width: 1024px) { .profile-grid { grid-template-columns: 260px 1fr; } }
         @media (max-width: 820px) {
             .profile-grid { grid-template-columns: 1fr; }
@@ -558,8 +880,10 @@ $initial     = strtoupper(substr($user['first_name'], 0, 1));
             .form-grid .full { grid-column: 1; }
         }
         @media (max-width: 768px) {
+            .sidebar { transform: translateX(-100%); }
+            .sidebar.open { transform: translateX(0); }
             .main { margin-left: 0; padding: 1rem; }
-            .sidebar { display: none; }
+            .notif-panel { width: 320px; right: -50px; }
         }
         @media (max-width: 500px) {
             .notif-panel { width: 280px; right: -50px; }
@@ -569,181 +893,170 @@ $initial     = strtoupper(substr($user['first_name'], 0, 1));
 </head>
 <body>
 
-<!-- ─── Sidebar ─────────────────────────────────────────── -->
-<aside class="sidebar">
+<!-- Sidebar -->
+<aside class="sidebar" id="sidebar">
     <div class="sidebar-brand">
-        DocuGo
-        <small><?= $roleLabel ?> Portal</small>
-    </div>
-    <nav class="sidebar-menu">
-        <div class="menu-label">Main</div>
-        <a href="dashboard.php"    class="menu-item"><span class="icon">🏠</span> Dashboard</a>
-        <a href="request_form.php" class="menu-item"><span class="icon">📄</span> Request Document</a>
-        <a href="my_requests.php"  class="menu-item"><span class="icon">📋</span> My Requests</a>
-        <?php if ($isAlumni): ?>
-        <div class="menu-label">Alumni</div>
-        <a href="graduate_tracer.php" class="menu-item">
-            <span class="icon">📊</span> Graduate Tracer
-        </a>
-        <a href="employment_profile.php" class="menu-item"><span class="icon">💼</span> Employment Profile</a>
-        <a href="alumni_documents.php" class="menu-item">
-            <span class="icon">🎓</span> Alumni Documents
-        </a>
-        <?php endif; ?>
-        <div class="menu-label">Account</div>
-        <a href="profile.php" class="menu-item active"><span class="icon">👤</span> My Profile</a>
-    </nav>
-    <div class="sidebar-footer">
-        <a href="../logout.php">🚪 Logout</a>
-    </div>
-</aside>
-
-<!-- ─── Main ────────────────────────────────────────────── -->
-<main class="main">
-
-    <!-- Topbar -->
-    <div class="topbar">
-        <h1>👤 My Profile</h1>
-        <div class="topbar-right">
-
-            <!-- 🔔 Notification Bell -->
-            <div class="notif-wrap" id="notifWrap">
-                <button class="notif-btn <?= $unreadCount > 0 ? 'has-unread' : '' ?>"
-                        id="notifBtn" onclick="togglePanel(event)" title="Notifications">
-                    🔔
-                    <span class="notif-badge <?= $unreadCount===0 ? 'hidden' : '' ?>" id="notifBadge">
-                        <?= $unreadCount > 99 ? '99+' : $unreadCount ?>
-                    </span>
-                </button>
-                <div class="notif-panel" id="notifPanel">
-                    <div class="notif-panel-header">
-                        <div class="notif-panel-title">
-                            🔔 Notifications
-                            <span class="notif-count-pill" id="countPill"
-                                  style="<?= $unreadCount===0 ? 'opacity:0' : '' ?>">
-                                <?= $unreadCount ?> new
-                            </span>
-                        </div>
-                        <button class="mark-all-btn" onclick="markAllRead()">✓ Mark all read</button>
-                    </div>
-                    <div class="notif-list" id="notifList">
-                        <div class="notif-empty">
-                            <div class="empty-emoji">🔔</div>
-                            <p>Loading notifications…</p>
-                        </div>
-                    </div>
-                    <div class="notif-panel-footer">
-                        <a href="notifications.php">View all notifications →</a>
-                    </div>
-                </div>
-            </div>
-
-            <!-- User chip (shows pic if available) -->
-            <div class="user-chip">
-                <div class="chip-avatar">
-                    <?php if ($picUrl): ?>
-                        <img src="<?= e($picUrl) ?>?v=<?= time() ?>" alt="">
-                    <?php else: ?>
-                        <?= $initial ?>
-                    <?php endif; ?>
-                </div>
-                <strong><?= e($user['first_name'] . ' ' . $user['last_name']) ?></strong>
+        <div class="brand-logo">
+            <img id="sidebarLogo" src="../wlogo.png" alt="ADFC Logo">
+            <div class="brand-text">
+                <div class="brand-name">Asian Development<br>Foundation College</div>
+                <div class="brand-sub"><?= $roleLabel ?> Portal</div>
             </div>
         </div>
     </div>
 
-    <?php if ($success): ?><div class="alert alert-success">✅ <?= $success ?></div><?php endif; ?>
-    <?php if ($error):   ?><div class="alert alert-error">⚠️ <?= $error ?></div><?php endif; ?>
+    <nav class="sidebar-menu">
+        <div class="menu-section">MAIN</div>
+        <a href="dashboard.php" class="menu-item"><span class="menu-icon">🏠</span> Dashboard</a>
+        <a href="request_form.php" class="menu-item"><span class="menu-icon">📄</span> Request Document</a>
+        <a href="my_requests.php" class="menu-item"><span class="menu-icon">📋</span> My Requests</a>
+        <a href="notifications.php" class="menu-item"><span class="menu-icon">🔔</span> Notifications</a>
+
+        <?php if ($isAlumni): ?>
+        <div class="menu-section">ALUMNI</div>
+        <a href="graduate_tracer.php" class="menu-item"><span class="menu-icon">📊</span> Graduate Tracer</a>
+        <a href="employment_profile.php" class="menu-item"><span class="menu-icon">💼</span> Employment Profile</a>
+        <a href="alumni_documents.php" class="menu-item"><span class="menu-icon">🎓</span> Alumni Documents</a>
+        <?php endif; ?>
+
+        <div class="menu-section">ACCOUNT</div>
+        <a href="profile.php" class="menu-item active"><span class="menu-icon">👤</span> My Profile</a>
+    </nav>
+
+    <div class="sidebar-footer">
+        <a href="../logout.php"><span class="menu-icon">🚪</span> Logout</a>
+    </div>
+</aside>
+
+<!-- Main Content -->
+<main class="main">
+
+    <div class="topbar">
+        <h1><i class="fas fa-user-circle"></i> My Profile</h1>
+        <div class="topbar-right">
+
+            <!-- Notification Bell -->
+            <div class="notif-wrap" id="notifWrap">
+                <button class="notif-btn <?= $unreadCount > 0 ? 'has-unread' : '' ?>" id="notifBtn" onclick="togglePanel(event)">
+                    <i class="fas fa-bell"></i>
+                    <span class="notif-badge <?= $unreadCount === 0 ? 'hidden' : '' ?>" id="notifBadge"><?= $unreadCount > 99 ? '99+' : $unreadCount ?></span>
+                </button>
+
+                <div class="notif-panel" id="notifPanel">
+                    <div class="notif-panel-header">
+                        <div class="notif-panel-title">
+                            <i class="fas fa-bell" style="color: var(--gold);"></i> Notifications
+                            <span class="notif-count-pill" id="countPill"><?= $unreadCount ?> new</span>
+                        </div>
+                        <button class="mark-all-btn" onclick="markAllRead()"><i class="fas fa-check-double"></i> Read all</button>
+                    </div>
+                    <div class="notif-list" id="notifList">
+                        <div class="notif-empty"><div class="empty-emoji">🔔</div><p>Loading notifications…</p></div>
+                    </div>
+                    <div class="notif-panel-footer">
+                        <a href="notifications.php">View all →</a>
+                    </div>
+                </div>
+            </div>
+
+            <!-- User chip -->
+            <div class="user-chip">
+                <div class="chip-avatar">
+                    <?php if ($picUrl): ?>
+                        <img src="<?= escape($picUrl) ?>?v=<?= time() ?>" alt="">
+                    <?php else: ?>
+                        <?= $initial ?>
+                    <?php endif; ?>
+                </div>
+                <strong><?= escape($user['first_name'] . ' ' . $user['last_name']) ?></strong>
+            </div>
+        </div>
+    </div>
+
+    <?php if ($success): ?><div class="alert alert-success"><i class="fas fa-check-circle"></i> <?= $success ?></div><?php endif; ?>
+    <?php if ($error):   ?><div class="alert alert-error"><i class="fas fa-exclamation-triangle"></i> <?= $error ?></div><?php endif; ?>
 
     <div class="profile-grid">
 
-        <!-- ── Left: Profile Card ──────────────────────── -->
+        <!-- Left: Profile Card -->
         <div>
             <div class="profile-card">
                 <div class="profile-card-top">
 
-                    <!-- ── Avatar with click-to-upload ── -->
                     <?php if ($hasProfilePic): ?>
                     <form id="picForm" method="POST" enctype="multipart/form-data">
                         <input type="hidden" name="action" value="upload_picture">
-                        <input type="file" id="picInput" name="profile_picture"
-                               accept="image/jpeg,image/png,image/webp">
+                        <input type="file" id="picInput" name="profile_picture" accept="image/jpeg,image/png,image/webp">
                     </form>
 
-                    <div class="avatar-wrap" onclick="document.getElementById('picInput').click()"
-                         title="Click to change photo">
+                    <div class="avatar-wrap" onclick="document.getElementById('picInput').click()" title="Click to change photo">
                         <div class="avatar-circle" id="avatarCircle">
                             <?php if ($picUrl): ?>
-                                <img src="<?= e($picUrl) ?>?v=<?= time() ?>"
-                                     alt="Profile" id="avatarImg">
+                                <img src="<?= escape($picUrl) ?>?v=<?= time() ?>" alt="Profile" id="avatarImg">
                             <?php else: ?>
                                 <span id="avatarInitial"><?= $initial ?></span>
                             <?php endif; ?>
                         </div>
                         <div class="avatar-overlay">
-                            <span class="cam-icon">📷</span>
+                            <span class="cam-icon"><i class="fas fa-camera"></i></span>
                             <span>Change photo</span>
                         </div>
                     </div>
 
-                    <!-- Upload progress -->
                     <div class="upload-progress" id="uploadProgress">
                         <div class="upload-progress-bar" id="uploadBar"></div>
                     </div>
                     <div class="upload-status" id="uploadStatus"></div>
 
                     <?php else: ?>
-                    <!-- No profile_picture column — static avatar -->
                     <div style="width:88px;height:88px;border-radius:50%;background:rgba(255,255,255,0.2);display:flex;align-items:center;justify-content:center;font-size:2.2rem;margin:0 auto 1rem;border:3px solid rgba(255,255,255,0.4);">
                         <?= $initial ?>
                     </div>
                     <?php endif; ?>
 
-                    <div class="profile-name"><?= e($user['first_name'] . ' ' . $user['last_name']) ?></div>
-                    <div class="profile-email"><?= e($user['email']) ?></div>
+                    <div class="profile-name"><?= escape($user['first_name'] . ' ' . $user['last_name']) ?></div>
+                    <div class="profile-email"><i class="fas fa-envelope"></i> <?= escape($user['email']) ?></div>
                     <div class="profile-role-chip"><?= $roleIcon ?> <?= $roleLabel ?></div>
 
-                    <!-- Remove picture button -->
                     <?php if ($hasProfilePic && $picUrl): ?>
                     <form method="POST" style="display:inline;">
                         <input type="hidden" name="action" value="remove_picture">
-                        <button type="submit" class="remove-pic-btn"
-                                onclick="return confirm('Remove your profile picture?')">
-                            🗑 Remove photo
+                        <button type="submit" class="remove-pic-btn" onclick="return confirm('Remove your profile picture?')">
+                            <i class="fas fa-trash"></i> Remove photo
                         </button>
                     </form>
                     <?php endif; ?>
 
-                </div><!-- /profile-card-top -->
+                </div>
 
                 <div class="profile-card-body">
                     <?php if (!empty($user['student_id'])): ?>
                     <div class="info-row">
-                        <span class="info-label">Student ID</span>
-                        <span class="info-value"><?= e($user['student_id']) ?></span>
+                        <span class="info-label"><i class="fas fa-id-card"></i> Student ID</span>
+                        <span class="info-value"><?= escape($user['student_id']) ?></span>
                     </div>
                     <?php endif; ?>
                     <?php if ($isAlumni && !empty($user['graduation_year'])): ?>
                     <div class="info-row">
-                        <span class="info-label">Graduated</span>
-                        <span class="info-value"><?= e($user['graduation_year']) ?></span>
+                        <span class="info-label"><i class="fas fa-calendar-alt"></i> Graduated</span>
+                        <span class="info-value"><?= escape($user['graduation_year']) ?></span>
                     </div>
                     <?php endif; ?>
                     <?php if ($isAlumni && !empty($user['course'])): ?>
                     <div class="info-row">
-                        <span class="info-label">Course</span>
-                        <span class="info-value" style="max-width:140px;text-align:right;"><?= e($user['course']) ?></span>
+                        <span class="info-label"><i class="fas fa-graduation-cap"></i> Course</span>
+                        <span class="info-value"><?= escape($user['course']) ?></span>
                     </div>
                     <?php endif; ?>
                     <div class="info-row">
-                        <span class="info-label">Account Status</span>
+                        <span class="info-label"><i class="fas fa-shield-alt"></i> Account Status</span>
                         <span class="info-value">
                             <?php $sc = ['active'=>'badge-green','pending'=>'badge-yellow','inactive'=>'badge-red'][$user['status']] ?? 'badge-gray'; ?>
                             <span class="badge <?= $sc ?>"><?= ucfirst($user['status']) ?></span>
                         </span>
                     </div>
                     <div class="info-row">
-                        <span class="info-label">Member Since</span>
+                        <span class="info-label"><i class="fas fa-calendar"></i> Member Since</span>
                         <span class="info-value"><?= $joinedDate ?></span>
                     </div>
 
@@ -760,22 +1073,22 @@ $initial     = strtoupper(substr($user['first_name'], 0, 1));
 
                     <?php if ($isAlumni): ?>
                         <?php if ($tracerDone): ?>
-                            <div class="tracer-banner tracer-done">✅ Tracer survey completed<a href="tracer_survey.php">View →</a></div>
+                            <div class="tracer-banner tracer-done"><i class="fas fa-check-circle"></i> Tracer survey completed<a href="graduate_tracer.php"><i class="fas fa-arrow-right"></i> View →</a></div>
                         <?php else: ?>
-                            <div class="tracer-banner">📊 Complete your tracer survey<a href="tracer_survey.php">Start →</a></div>
+                            <div class="tracer-banner"><i class="fas fa-chart-line"></i> Complete your tracer survey<a href="graduate_tracer.php"><i class="fas fa-arrow-right"></i> Start →</a></div>
                         <?php endif; ?>
                     <?php endif; ?>
                 </div>
             </div>
         </div>
 
-        <!-- ── Right: Edit Forms ──────────────────────── -->
+        <!-- Right: Edit Forms -->
         <div class="right-panel">
 
             <!-- Personal Information -->
             <div class="section-card">
                 <div class="section-header">
-                    <span class="section-icon">📝</span>
+                    <span class="section-icon"><i class="fas fa-edit"></i></span>
                     <h2>Personal Information</h2>
                 </div>
                 <div class="section-body">
@@ -784,31 +1097,27 @@ $initial     = strtoupper(substr($user['first_name'], 0, 1));
                         <div class="form-grid">
                             <div class="form-group">
                                 <label class="form-label" for="first_name">First Name</label>
-                                <input type="text" id="first_name" name="first_name" class="form-input"
-                                       value="<?= e($user['first_name']) ?>" required maxlength="80">
+                                <input type="text" id="first_name" name="first_name" class="form-input" value="<?= escape($user['first_name']) ?>" required maxlength="80">
                             </div>
                             <div class="form-group">
                                 <label class="form-label" for="last_name">Last Name</label>
-                                <input type="text" id="last_name" name="last_name" class="form-input"
-                                       value="<?= e($user['last_name']) ?>" required maxlength="80">
+                                <input type="text" id="last_name" name="last_name" class="form-input" value="<?= escape($user['last_name']) ?>" required maxlength="80">
                             </div>
                             <div class="form-group">
                                 <label class="form-label">Email Address</label>
-                                <input type="email" class="form-input" value="<?= e($user['email']) ?>" readonly>
-                                <span class="form-hint">Email cannot be changed</span>
+                                <input type="email" class="form-input" value="<?= escape($user['email']) ?>" readonly>
+                                <div class="form-hint"><i class="fas fa-info-circle"></i> Email cannot be changed</div>
                             </div>
                             <?php if (!empty($user['student_id'])): ?>
                             <div class="form-group">
                                 <label class="form-label">Student ID</label>
-                                <input type="text" class="form-input" value="<?= e($user['student_id']) ?>" readonly>
-                                <span class="form-hint">ID cannot be changed</span>
+                                <input type="text" class="form-input" value="<?= escape($user['student_id']) ?>" readonly>
+                                <div class="form-hint">ID cannot be changed</div>
                             </div>
                             <?php endif; ?>
                             <div class="form-group">
                                 <label class="form-label" for="phone">Phone Number</label>
-                                <input type="text" id="phone" name="phone" class="form-input"
-                                       value="<?= e($user['phone'] ?? '') ?>" maxlength="20"
-                                       placeholder="e.g. 09171234567">
+                                <input type="text" id="phone" name="phone" class="form-input" value="<?= escape($user['phone'] ?? '') ?>" maxlength="20" placeholder="e.g. 09171234567">
                             </div>
                             <?php if ($isAlumni): ?>
                             <div class="form-group">
@@ -822,19 +1131,16 @@ $initial     = strtoupper(substr($user['first_name'], 0, 1));
                             </div>
                             <div class="form-group full">
                                 <label class="form-label" for="course">Course / Program</label>
-                                <input type="text" id="course" name="course" class="form-input"
-                                       value="<?= e($user['course'] ?? '') ?>" maxlength="120"
-                                       placeholder="e.g. Bachelor of Science in Information Technology">
+                                <input type="text" id="course" name="course" class="form-input" value="<?= escape($user['course'] ?? '') ?>" maxlength="120" placeholder="e.g. Bachelor of Science in Information Technology">
                             </div>
                             <?php endif; ?>
                             <div class="form-group full">
                                 <label class="form-label" for="address">Home Address</label>
-                                <textarea id="address" name="address" class="form-textarea"
-                                          placeholder="Enter your complete address…" maxlength="300"><?= e($user['address'] ?? '') ?></textarea>
+                                <textarea id="address" name="address" class="form-textarea" placeholder="Enter your complete address…" maxlength="300"><?= escape($user['address'] ?? '') ?></textarea>
                             </div>
                         </div>
                         <div class="form-footer">
-                            <button type="submit" class="btn btn-primary">💾 Save Changes</button>
+                            <button type="submit" class="btn btn-primary"><i class="fas fa-save"></i> Save Changes</button>
                         </div>
                     </form>
                 </div>
@@ -843,7 +1149,7 @@ $initial     = strtoupper(substr($user['first_name'], 0, 1));
             <!-- Change Password -->
             <div class="section-card">
                 <div class="section-header">
-                    <span class="section-icon">🔒</span>
+                    <span class="section-icon"><i class="fas fa-lock"></i></span>
                     <h2>Change Password</h2>
                 </div>
                 <div class="section-body">
@@ -852,15 +1158,11 @@ $initial     = strtoupper(substr($user['first_name'], 0, 1));
                         <div class="form-grid">
                             <div class="form-group full">
                                 <label class="form-label" for="current_password">Current Password</label>
-                                <input type="password" id="current_password" name="current_password"
-                                       class="form-input" placeholder="Enter your current password"
-                                       autocomplete="current-password">
+                                <input type="password" id="current_password" name="current_password" class="form-input" placeholder="Enter your current password" autocomplete="current-password">
                             </div>
                             <div class="form-group">
                                 <label class="form-label" for="new_password">New Password</label>
-                                <input type="password" id="new_password" name="new_password"
-                                       class="form-input" placeholder="At least 8 characters"
-                                       autocomplete="new-password" oninput="checkStrength(this.value)">
+                                <input type="password" id="new_password" name="new_password" class="form-input" placeholder="At least 8 characters" autocomplete="new-password" oninput="checkStrength(this.value)">
                                 <div class="strength-wrap">
                                     <div class="strength-bar-bg">
                                         <div class="strength-bar" id="strengthBar"></div>
@@ -870,14 +1172,12 @@ $initial     = strtoupper(substr($user['first_name'], 0, 1));
                             </div>
                             <div class="form-group">
                                 <label class="form-label" for="confirm_password">Confirm New Password</label>
-                                <input type="password" id="confirm_password" name="confirm_password"
-                                       class="form-input" placeholder="Re-enter new password"
-                                       autocomplete="new-password" oninput="checkMatch()">
+                                <input type="password" id="confirm_password" name="confirm_password" class="form-input" placeholder="Re-enter new password" autocomplete="new-password" oninput="checkMatch()">
                                 <div class="form-hint" id="matchHint"></div>
                             </div>
                         </div>
                         <div class="form-footer">
-                            <button type="submit" class="btn btn-primary">🔒 Change Password</button>
+                            <button type="submit" class="btn btn-primary"><i class="fas fa-key"></i> Change Password</button>
                         </div>
                     </form>
                 </div>
@@ -887,67 +1187,174 @@ $initial     = strtoupper(substr($user['first_name'], 0, 1));
     </div>
 </main>
 
-<!-- ─── JS ──────────────────────────────────────────────── -->
+<!-- Theme Toggle -->
+<div class="theme-toggle" id="themeToggleBtn">
+    <i class="fas fa-moon"></i>
+</div>
+
 <script>
-/* ── Notification Bell ──────────────────────────────────── */
-let panelOpen   = false;
+// Theme Toggle
+const applyLogoForTheme = (isLight) => {
+    const logoImg = document.getElementById('sidebarLogo');
+    if (logoImg) logoImg.src = isLight ? '../wlogo.png' : '../wlogo.png';
+};
+
+const savedTheme = localStorage.getItem('docugoTheme');
+const isLightOnLoad = savedTheme === 'light';
+
+if (isLightOnLoad) {
+    document.body.classList.add('light');
+    document.getElementById('themeToggleBtn').innerHTML = '<i class="fas fa-sun"></i>';
+} else {
+    document.body.classList.remove('light');
+    document.getElementById('themeToggleBtn').innerHTML = '<i class="fas fa-moon"></i>';
+}
+applyLogoForTheme(isLightOnLoad);
+
+document.getElementById('themeToggleBtn').addEventListener('click', () => {
+    const isLight = document.body.classList.toggle('light');
+    localStorage.setItem('docugoTheme', isLight ? 'light' : 'dark');
+    document.getElementById('themeToggleBtn').innerHTML = isLight ? '<i class="fas fa-sun"></i>' : '<i class="fas fa-moon"></i>';
+    applyLogoForTheme(isLight);
+});
+
+// Notification functions
+let panelOpen = false;
 let unreadCount = <?= $unreadCount ?>;
-const PAGE_URL  = window.location.pathname;
+const PAGE_URL = window.location.pathname;
 
 function togglePanel(e) {
-    e.stopPropagation(); panelOpen = !panelOpen;
+    e.stopPropagation();
+    panelOpen = !panelOpen;
     document.getElementById('notifPanel').classList.toggle('open', panelOpen);
     if (panelOpen) loadNotifList();
 }
+
 document.addEventListener('click', function(e) {
     if (!document.getElementById('notifWrap').contains(e.target) && panelOpen) {
-        document.getElementById('notifPanel').classList.remove('open'); panelOpen = false;
+        document.getElementById('notifPanel').classList.remove('open');
+        panelOpen = false;
     }
 });
-document.addEventListener('keydown', function(e) {
-    if (e.key === 'Escape' && panelOpen) { document.getElementById('notifPanel').classList.remove('open'); panelOpen = false; }
-});
+
 function loadNotifList() {
-    fetch('dashboard.php?ajax_notif_list=1').then(r=>r.json()).then(renderList).catch(()=>{});
+    fetch('dashboard.php?ajax_notif_list=1')
+        .then(r => r.json())
+        .then(renderNotifList)
+        .catch(() => {});
 }
+
+function renderNotifList(items) {
+    const list = document.getElementById('notifList');
+    if (!items.length) {
+        list.innerHTML = `<div class="notif-empty"><div class="empty-emoji">🎉</div><p>All caught up!</p></div>`;
+        return;
+    }
+    list.innerHTML = items.map(n => {
+        const lm = n.message.toLowerCase();
+        let emoji = '🔔', cls = 'type-info', title = 'Notification';
+        if (lm.includes('ready')) { emoji = '📦'; cls = 'type-ready'; title = 'Document Ready'; }
+        else if (lm.includes('approv')) { emoji = '✅'; cls = 'type-approved'; title = 'Request Approved'; }
+        else if (lm.includes('process')) { emoji = '⚙️'; cls = 'type-process'; title = 'Being Processed'; }
+        else if (lm.includes('cancel')) { emoji = '❌'; cls = 'type-cancel'; title = 'Request Cancelled'; }
+        else if (lm.includes('releas')) { emoji = '📬'; cls = 'type-ready'; title = 'Document Released'; }
+        else if (lm.includes('paid')) { emoji = '💳'; cls = 'type-approved'; title = 'Payment Confirmed'; }
+        const isNew = n.is_read == 0;
+        const ago = jsTimeAgo(n.created_at);
+        return `<div class="notif-item ${isNew ? 'unread' : ''}" id="ni-${n.id}" onclick="markRead(${n.id}, this)">
+            <div class="notif-item-icon ${cls}">${emoji}</div>
+            <div class="notif-item-body">
+                <div class="notif-item-title">${escapeHTML(title)}</div>
+                <div class="notif-item-msg">${escapeHTML(n.message)}</div>
+                <div class="notif-item-time"><i class="far fa-clock"></i> ${ago}</div>
+            </div>
+            ${isNew ? `<div class="notif-unread-dot" id="dot-${n.id}"></div>` : ''}
+        </div>`;
+    }).join('');
+}
+
 function markRead(id, el) {
     if (!el.classList.contains('unread')) return;
-    fetch(PAGE_URL,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'ajax_mark_read=1&notif_id='+id})
-    .then(r=>r.json()).then(d=>{ if(!d.ok)return; el.classList.remove('unread'); const dot=document.getElementById('dot-'+id); if(dot)dot.remove(); unreadCount=Math.max(0,unreadCount-1); syncBadge(); });
+    fetch(PAGE_URL, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: 'ajax_mark_read=1&notif_id=' + id
+    }).then(r => r.json()).then(d => {
+        if (!d.ok) return;
+        el.classList.remove('unread');
+        const dot = document.getElementById('dot-' + id);
+        if (dot) dot.remove();
+        unreadCount = Math.max(0, unreadCount - 1);
+        syncBadge();
+    });
 }
-function markAllRead() {
-    fetch(PAGE_URL,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'ajax_mark_all_read=1'})
-    .then(r=>r.json()).then(d=>{ if(!d.ok)return; document.querySelectorAll('.notif-item.unread').forEach(el=>el.classList.remove('unread')); document.querySelectorAll('.notif-unread-dot').forEach(el=>el.remove()); unreadCount=0; syncBadge(); });
-}
-function syncBadge() {
-    const badge=document.getElementById('notifBadge'),pill=document.getElementById('countPill'),btn=document.getElementById('notifBtn');
-    if(unreadCount>0){badge.textContent=unreadCount>99?'99+':unreadCount;badge.classList.remove('hidden');pill.textContent=unreadCount+' new';pill.style.opacity='1';btn.classList.add('has-unread');}
-    else{badge.classList.add('hidden');pill.style.opacity='0';btn.classList.remove('has-unread');}
-}
-function renderList(items) {
-    const list=document.getElementById('notifList');
-    if(!items.length){list.innerHTML='<div class="notif-empty"><div class="empty-emoji">🎉</div><p>All caught up!</p></div>';return;}
-    const iconMap=[['ready','📦','type-ready','Document Ready'],['approv','✅','type-approved','Request Approved'],['process','⚙️','type-process','Being Processed'],['cancel','❌','type-cancel','Request Cancelled'],['releas','📬','type-ready','Document Released'],['paid','💳','type-approved','Payment Confirmed'],['welcom','👋','type-info','Welcome!']];
-    list.innerHTML=items.map(n=>{const lm=n.message.toLowerCase();let[emoji,cls,title]=['🔔','type-info','Notification'];for(const[k,e,c,t]of iconMap){if(lm.includes(k)){emoji=e;cls=c;title=t;break;}}const isNew=n.is_read==0;return`<div class="notif-item ${isNew?'unread':''}" id="ni-${n.id}" onclick="markRead(${n.id},this)"><div class="notif-item-icon ${cls}">${emoji}</div><div class="notif-item-body"><div class="notif-item-title">${esc(title)}</div><div class="notif-item-msg">${esc(n.message)}</div><div class="notif-item-time">🕐 ${jsAgo(n.created_at)}</div></div>${isNew?`<div class="notif-unread-dot" id="dot-${n.id}"></div>`:''}</div>`;}).join('');
-}
-function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
-function jsAgo(ds){const d=Math.floor((Date.now()-new Date(ds).getTime())/1000);if(d<60)return'just now';if(d<3600)return Math.floor(d/60)+' min ago';if(d<86400)return Math.floor(d/3600)+' hr ago';if(d<604800)return Math.floor(d/86400)+' day ago';return new Date(ds).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});}
-setInterval(()=>{fetch('dashboard.php?ajax_unread_count=1').then(r=>r.json()).then(d=>{if(typeof d.count==='number'&&d.count!==unreadCount){unreadCount=d.count;syncBadge();}}).catch(()=>{});},60000);
 
-/* ── Profile Picture Upload ──────────────────────────────── */
+function markAllRead() {
+    fetch(PAGE_URL, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: 'ajax_mark_all_read=1'
+    }).then(r => r.json()).then(d => {
+        if (!d.ok) return;
+        document.querySelectorAll('.notif-item.unread').forEach(el => el.classList.remove('unread'));
+        document.querySelectorAll('.notif-unread-dot').forEach(el => el.remove());
+        unreadCount = 0;
+        syncBadge();
+    });
+}
+
+function syncBadge() {
+    const badge = document.getElementById('notifBadge');
+    const pill = document.getElementById('countPill');
+    const btn = document.getElementById('notifBtn');
+    if (unreadCount > 0) {
+        badge.textContent = unreadCount > 99 ? '99+' : unreadCount;
+        badge.classList.remove('hidden');
+        pill.textContent = unreadCount + ' new';
+        pill.style.opacity = '1';
+        btn.classList.add('has-unread');
+    } else {
+        badge.classList.add('hidden');
+        pill.style.opacity = '0';
+        btn.classList.remove('has-unread');
+    }
+}
+
+function escapeHTML(str) {
+    return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function jsTimeAgo(ds) {
+    const d = Math.floor((Date.now() - new Date(ds).getTime()) / 1000);
+    if (d < 60) return 'just now';
+    if (d < 3600) return Math.floor(d/60) + ' min ago';
+    if (d < 86400) return Math.floor(d/3600) + ' hr ago';
+    if (d < 604800) return Math.floor(d/86400) + ' day ago';
+    return new Date(ds).toLocaleDateString('en-US', {month:'short', day:'numeric', year:'numeric'});
+}
+
+setInterval(() => {
+    fetch('dashboard.php?ajax_unread_count=1').then(r => r.json()).then(d => {
+        if (typeof d.count === 'number' && d.count !== unreadCount) {
+            unreadCount = d.count;
+            syncBadge();
+        }
+    }).catch(() => {});
+}, 30000);
+
+// Profile picture upload
 <?php if ($hasProfilePic): ?>
-const picInput  = document.getElementById('picInput');
-const picForm   = document.getElementById('picForm');
-const bar       = document.getElementById('uploadBar');
-const progress  = document.getElementById('uploadProgress');
-const status    = document.getElementById('uploadStatus');
+const picInput = document.getElementById('picInput');
+const picForm = document.getElementById('picForm');
+const bar = document.getElementById('uploadBar');
+const progress = document.getElementById('uploadProgress');
+const status = document.getElementById('uploadStatus');
 const avatarCircle = document.getElementById('avatarCircle');
 
 picInput.addEventListener('change', function() {
     const file = this.files[0];
     if (!file) return;
 
-    // Validate client-side
     const allowed = ['image/jpeg','image/png','image/webp'];
     if (!allowed.includes(file.type)) {
         showStatus('❌ Only JPG, PNG, or WEBP allowed', '#fee2e2');
@@ -962,13 +1369,11 @@ picInput.addEventListener('change', function() {
     const reader = new FileReader();
     reader.onload = function(e) {
         avatarCircle.innerHTML = `<img src="${e.target.result}" alt="Profile" style="width:100%;height:100%;object-fit:cover;border-radius:50%;">`;
-        // Also update topbar chip
         const chipAvatar = document.querySelector('.chip-avatar');
         if (chipAvatar) chipAvatar.innerHTML = `<img src="${e.target.result}" alt="" style="width:100%;height:100%;object-fit:cover;border-radius:50%;">`;
     };
     reader.readAsDataURL(file);
 
-    // Upload with progress
     progress.style.display = 'block';
     showStatus('⬆️ Uploading…', 'rgba(255,255,255,0.85)');
 
@@ -984,7 +1389,6 @@ picInput.addEventListener('change', function() {
 
     xhr.addEventListener('load', function() {
         if (xhr.status === 200 && xhr.responseURL) {
-            // Form submitted normally via redirect — just follow it
             bar.style.width = '100%';
             showStatus('✅ Uploaded!', 'rgba(255,255,255,0.9)');
             setTimeout(() => { window.location.href = 'profile.php?msg=' + encodeURIComponent('Profile picture updated successfully.'); }, 600);
@@ -1006,22 +1410,21 @@ function showStatus(msg, color) {
 }
 <?php endif; ?>
 
-/* ── Password strength ───────────────────────────────────── */
+// Password strength
 function checkStrength(val) {
-    const bar  = document.getElementById('strengthBar');
+    const bar = document.getElementById('strengthBar');
     const text = document.getElementById('strengthText');
-    let score  = 0;
-    if (val.length >= 8)          score++;
-    if (val.length >= 12)         score++;
-    if (/[A-Z]/.test(val))        score++;
-    if (/[0-9]/.test(val))        score++;
+    let score = 0;
+    if (val.length >= 8) score++;
+    if (val.length >= 12) score++;
+    if (/[A-Z]/.test(val)) score++;
+    if (/[0-9]/.test(val)) score++;
     if (/[^A-Za-z0-9]/.test(val)) score++;
     const lvls = [
         {w:'0%',  c:'#e5e7eb',t:'',          tc:'#9ca3af'},
         {w:'25%', c:'#dc2626',t:'Weak',       tc:'#dc2626'},
         {w:'50%', c:'#f59e0b',t:'Fair',       tc:'#f59e0b'},
         {w:'75%', c:'#3b82f6',t:'Good',       tc:'#3b82f6'},
-        {w:'100%',c:'#059669',t:'Strong ✅',  tc:'#059669'},
         {w:'100%',c:'#059669',t:'Strong ✅',  tc:'#059669'},
     ];
     const l = lvls[Math.min(score,5)];
@@ -1033,15 +1436,14 @@ function checkStrength(val) {
 }
 
 function checkMatch() {
-    const np   = document.getElementById('new_password').value;
-    const cp   = document.getElementById('confirm_password').value;
+    const np = document.getElementById('new_password').value;
+    const cp = document.getElementById('confirm_password').value;
     const hint = document.getElementById('matchHint');
     if (!cp.length) { hint.textContent = ''; return; }
-    if (np === cp) { hint.textContent = '✅ Passwords match'; hint.style.color = '#059669'; }
-    else           { hint.textContent = '❌ Passwords do not match'; hint.style.color = '#dc2626'; }
+    if (np === cp) { hint.innerHTML = '<i class="fas fa-check-circle"></i> Passwords match'; hint.style.color = '#4cd98a'; }
+    else { hint.innerHTML = '<i class="fas fa-times-circle"></i> Passwords do not match'; hint.style.color = '#f87171'; }
 }
 </script>
 
 </body>
 </html>
-<?php if ($conn && $conn->ping()) $conn->close(); ?>

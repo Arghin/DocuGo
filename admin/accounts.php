@@ -77,6 +77,12 @@ $countStmt->close();
 // Get pending accounts count for sidebar badge
 $pendingAccs = $conn->query("SELECT COUNT(*) as c FROM users WHERE status = 'pending'")->fetch_assoc()['c'];
 
+// Get counts for stats cards
+$totalActive = $conn->query("SELECT COUNT(*) as c FROM users WHERE status = 'active'")->fetch_assoc()['c'];
+$totalPending = $conn->query("SELECT COUNT(*) as c FROM users WHERE status = 'pending'")->fetch_assoc()['c'];
+$totalInactive = $conn->query("SELECT COUNT(*) as c FROM users WHERE status = 'inactive'")->fetch_assoc()['c'];
+$totalStudents = $conn->query("SELECT COUNT(*) as c FROM users WHERE role = 'student'")->fetch_assoc()['c'];
+
 // Handle status updates
 $success = '';
 $error = '';
@@ -104,14 +110,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_status'])) {
     }
 }
 
-function e($v) { return htmlspecialchars($v ?? ''); }
-function badgeClass($s) {
-    return ['active' => 'active', 'inactive' => 'inactive', 'pending' => 'pending'][$s] ?? 'gray';
-}
-function roleIcon($r) {
-    return ['student' => '🎓', 'alumni' => '👨‍🎓', 'registrar' => '📋', 'admin' => '🛡️'][$r] ?? '👤';
-}
-function ago($datetime) {
+// Helper functions
+function escape($v) { return htmlspecialchars($v ?? ''); }
+function timeAgo($datetime) {
     if (!$datetime) return '—';
     $diff = time() - strtotime($datetime);
     if ($diff < 60) return 'just now';
@@ -119,248 +120,311 @@ function ago($datetime) {
     if ($diff < 86400) return floor($diff/3600) . 'h ago';
     return floor($diff/86400) . 'd ago';
 }
+function statusBadge($status) {
+    $classes = ['active' => 'badge-active', 'inactive' => 'badge-inactive', 'pending' => 'badge-pending'];
+    $class = $classes[$status] ?? 'badge-pending';
+    $label = ucfirst($status);
+    return "<span class='badge $class'>$label</span>";
+}
+function roleIcon($role) {
+    $icons = ['student' => '🎓', 'alumni' => '👨‍🎓', 'registrar' => '📋', 'admin' => '🛡️'];
+    return $icons[$role] ?? '👤';
+}
+
+$conn->close();
 ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>User Accounts — DocuGo Admin</title>
-    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+    <title>User Accounts — ADFC DocuGo</title>
+    <link href="https://fonts.googleapis.com/css2?family=Sora:wght@300;400;600;700;800&family=DM+Sans:ital,wght@0,300;0,400;0,500;1,300&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
     <style>
-        /* ── Reset & Base ─────────────────────────────── */
-        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
+        /* ========== THEME VARIABLES ========== */
         :root {
-            --blue:      #1a56db;
-            --blue-dk:   #1447c0;
-            --blue-lt:   #eff6ff;
-            --green:     #059669;
-            --green-lt:  #f0fdf4;
-            --yellow:    #d97706;
-            --yellow-lt: #fffbeb;
-            --purple:    #7c3aed;
-            --purple-lt: #faf5ff;
-            --red:       #dc2626;
-            --red-lt:    #fef2f2;
-            --bg:        #f0f4f8;
-            --card:      #ffffff;
-            --border:    #e5e7eb;
-            --border-lt: #f3f4f6;
-            --text:      #111827;
-            --text-2:    #374151;
-            --text-3:    #6b7280;
-            --text-4:    #9ca3af;
-            --sidebar:   220px;
-            --shadow:    0 1px 4px rgba(0,0,0,0.06);
-            --shadow-md: 0 4px 16px rgba(0,0,0,0.08);
+            --primary:    #1a3ec7;
+            --primary-dk: #1230a0;
+            --accent:     #3b6bff;
+            --accent2:    #6b9fff;
+            --bg:         #080e28;
+            --bg2:        #0b1535;
+            --bg3:        #0e1c42;
+            --surface:    rgba(255,255,255,0.05);
+            --surface-hv: rgba(255,255,255,0.08);
+            --border:     rgba(255,255,255,0.08);
+            --border-hv:  rgba(59,107,255,0.25);
+            --text:       #dce6f8;
+            --text-muted: #7a96c4;
+            --text-dim:   #4a6190;
+            --green:      #4cd98a;
+            --yellow:     #fbbf24;
+            --purple:     #a78bfa;
+            --red:        #f87171;
+            --blue:       #60a5fa;
+            --radius-sm:  8px;
+            --radius-md:  12px;
+            --radius-lg:  16px;
+            --radius-xl:  24px;
+            --sidebar-width: 260px;
+            --ease-out:   cubic-bezier(0.16, 1, 0.3, 1);
+            --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+            
+            --sidebar-bg: #0f2a6b;
+            --sidebar-border: rgba(255,255,255,0.1);
+            --sidebar-text: #b8c9f0;
+            --sidebar-text-hover: #ffffff;
+            --sidebar-active-bg: rgba(59,107,255,0.25);
+            --sidebar-active-color: #ffffff;
+            --sidebar-section: #8eabff;
+            --card-bg: rgba(255,255,255,0.05);
         }
+
+        body.light {
+            --bg:         #eef2ff;
+            --bg2:        #e2e9ff;
+            --bg3:        #d8e2ff;
+            --surface:    rgba(255,255,255,0.6);
+            --surface-hv: rgba(255,255,255,0.85);
+            --border:     rgba(26,62,199,0.1);
+            --border-hv:  rgba(26,62,199,0.25);
+            --text:       #0c1836;
+            --text-muted: #3d5a92;
+            --text-dim:   #7a96c4;
+            --card-bg: #ffffff;
+            
+            --sidebar-bg: #2d4ed6;
+            --sidebar-border: rgba(255,255,255,0.15);
+            --sidebar-text: #e0e8ff;
+            --sidebar-text-hover: #ffffff;
+            --sidebar-active-bg: rgba(255,255,255,0.2);
+            --sidebar-active-color: #ffffff;
+            --sidebar-section: #c7d5ff;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
 
         body {
-            font-family: 'Plus Jakarta Sans', 'Segoe UI', sans-serif;
+            font-family: 'DM Sans', sans-serif;
             background: var(--bg);
             color: var(--text);
-            min-height: 100vh;
+            transition: background 0.3s, color 0.3s;
+            overflow-x: hidden;
             display: flex;
-            font-size: 14px;
-            line-height: 1.5;
         }
 
-        /* ── Sidebar (matching dashboard) ───────────────── */
+        /* ========== SIDEBAR ========== */
         .sidebar {
-            width: var(--sidebar);
-            background: var(--blue);
-            color: #fff;
-            min-height: 100vh;
-            flex-shrink: 0;
+            position: fixed;
+            left: 0;
+            top: 0;
+            width: var(--sidebar-width);
+            height: 100vh;
+            background: var(--sidebar-bg);
+            border-right: 1px solid var(--sidebar-border);
             display: flex;
             flex-direction: column;
-            position: fixed;
-            top: 0; left: 0; height: 100%;
             z-index: 100;
-            border-right: 1px solid rgba(255,255,255,0.1);
+            transition: transform 0.3s var(--ease-out), background 0.3s;
         }
 
         .sidebar-brand {
-            padding: 1.4rem 1.2rem 1.2rem;
-            border-bottom: 1px solid rgba(255,255,255,0.07);
+            padding: 1.5rem 1.2rem;
+            border-bottom: 1px solid var(--sidebar-border);
+            margin-bottom: 1rem;
         }
 
         .brand-logo {
             display: flex;
             align-items: center;
-            gap: 0.65rem;
-            margin-bottom: 0.2rem;
+            gap: 12px;
         }
 
-        .brand-icon {
-            width: 34px; height: 34px;
-            background: var(--blue);
-            border-radius: 9px;
-            display: flex; align-items: center; justify-content: center;
-            font-size: 1rem;
-            box-shadow: 0 2px 8px rgba(26,86,219,0.4);
+        .brand-logo img {
+            width: 48px;
+            height: 48px;
+            object-fit: contain;
+            border-radius: 12px;
+            transition: transform 0.3s var(--ease-spring);
+        }
+
+        .brand-logo img:hover {
+            transform: rotate(-5deg) scale(1.05);
+        }
+
+        .brand-text {
+            flex: 1;
         }
 
         .brand-name {
-            font-size: 1.2rem;
+            font-family: 'Sora', sans-serif;
             font-weight: 800;
-            color: #fff;
-            letter-spacing: -0.4px;
+            font-size: 0.9rem;
+            color: white;
+            line-height: 1.2;
         }
 
         .brand-sub {
-            font-size: 0.67rem;
-            color: rgba(255,255,255,0.4);
-            text-transform: uppercase;
-            letter-spacing: 0.08em;
-            font-weight: 600;
-            padding-left: 2.9rem;
+            font-size: 0.55rem;
+            color: rgba(255,255,255,0.7);
+            margin-top: 3px;
+            letter-spacing: 0.3px;
         }
 
-        .sidebar-menu { padding: 0.85rem 0; flex: 1; overflow-y: auto; }
-
-        .sidebar-footer {
-            padding: 0.9rem 1rem;
-            border-top: 1px solid rgba(255,255,255,0.15);
-            font-size: 0.8rem;
+        .sidebar-menu {
+            flex: 1;
+            padding: 0 0.8rem;
         }
-
-        .sidebar-footer a {
-            color: rgba(255,255,255,0.85);
-            text-decoration: none;
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-            transition: color 0.15s;
-        }
-
-        .sidebar-footer a:hover { color: #fff; }
 
         .menu-section {
-            padding: 0.8rem 1rem 0.2rem;
-            font-size: 0.62rem;
+            font-size: 0.65rem;
             font-weight: 700;
             text-transform: uppercase;
-            letter-spacing: 0.1em;
-            color: rgba(255,255,255,0.3);
+            letter-spacing: 1px;
+            color: var(--sidebar-section);
+            padding: 0.8rem 0.8rem 0.5rem;
         }
 
         .menu-item {
             display: flex;
             align-items: center;
-            gap: 0.7rem;
-            padding: 0.58rem 1rem;
-            margin: 1px 0.6rem;
-            border-radius: 8px;
-            color: rgba(255,255,255,0.6);
+            gap: 12px;
+            padding: 0.7rem 0.8rem;
+            border-radius: var(--radius-sm);
+            color: var(--sidebar-text);
             text-decoration: none;
-            font-size: 0.845rem;
+            font-size: 0.85rem;
             font-weight: 500;
-            transition: background 0.15s, color 0.15s;
-            position: relative;
+            transition: all 0.2s;
+            margin-bottom: 2px;
         }
 
-        .menu-item:hover  { background: rgba(255,255,255,0.07); color: rgba(255,255,255,0.9); }
-        .menu-item.active { background: rgba(255,255,255,0.15); color: #fff; font-weight: 600; }
-        .menu-item.active::before {
-            content: '';
-            position: absolute;
-            left: -0.6rem; top: 50%;
-            transform: translateY(-50%);
-            width: 3px; height: 20px;
-            background: #fff;
-            border-radius: 0 3px 3px 0;
+        .menu-item:hover {
+            background: var(--sidebar-active-bg);
+            color: var(--sidebar-text-hover);
         }
 
-        .menu-icon { font-size: 0.95rem; width: 18px; text-align: center; flex-shrink: 0; }
+        .menu-item.active {
+            background: var(--sidebar-active-bg);
+            color: var(--sidebar-active-color);
+            border-left: 2px solid white;
+        }
+
+        .menu-icon {
+            font-size: 1.1rem;
+            width: 24px;
+        }
+
         .menu-badge {
             margin-left: auto;
-            background: var(--red);
-            color: #fff;
-            font-size: 0.6rem;
-            font-weight: 800;
-            padding: 1px 6px;
-            border-radius: 8px;
-            min-width: 18px;
-            text-align: center;
+            background: rgba(255,255,255,0.25);
+            color: white;
+            font-size: 0.65rem;
+            font-weight: 700;
+            padding: 2px 8px;
+            border-radius: 20px;
         }
-        .menu-badge.yellow { background: var(--yellow); }
 
-        /* ── Main content ──────────────────────────────── */
-        .main { margin-left: var(--sidebar); flex: 1; padding: 1.8rem 2rem; min-width: 0; }
+        .menu-badge.yellow { background: var(--yellow); color: #1a1a2e; }
 
-        /* ── Topbar ───────────────────────────────────── */
-        .topbar {
+        .sidebar-footer {
+            padding: 1rem 0.8rem;
+            border-top: 1px solid var(--sidebar-border);
+            margin-top: auto;
+        }
+
+        .sidebar-footer a {
             display: flex;
             align-items: center;
+            gap: 10px;
+            padding: 0.7rem 0.8rem;
+            color: var(--sidebar-text);
+            text-decoration: none;
+            border-radius: var(--radius-sm);
+            transition: all 0.2s;
+        }
+
+        .sidebar-footer a:hover {
+            background: var(--sidebar-active-bg);
+            color: var(--red);
+        }
+
+        /* ========== MAIN CONTENT ========== */
+        .main {
+            margin-left: var(--sidebar-width);
+            padding: 1.5rem 2rem;
+            min-height: 100vh;
+            flex: 1;
+        }
+
+        /* Topbar */
+        .topbar {
+            display: flex;
             justify-content: space-between;
-            margin-bottom: 1.6rem;
+            align-items: center;
+            margin-bottom: 2rem;
+            flex-wrap: wrap;
             gap: 1rem;
         }
+
         .topbar-left h1 {
-            font-size: 1.4rem;
-            font-weight: 800;
+            font-family: 'Sora', sans-serif;
+            font-size: 1.6rem;
+            font-weight: 700;
             color: var(--text);
-            letter-spacing: -0.3px;
+            margin-bottom: 0.2rem;
         }
+
         .topbar-left p {
-            font-size: 0.82rem;
-            color: var(--text-3);
-            margin-top: 1px;
+            color: var(--text-muted);
+            font-size: 0.85rem;
         }
+
         .topbar-right {
             display: flex;
             align-items: center;
-            gap: 0.75rem;
-        }
-        .admin-info {
-            font-size: 0.85rem;
-            background: var(--card);
-            padding: 0.4rem 0.9rem;
-            border-radius: 20px;
-            border: 1px solid var(--border);
-        }
-        .topbar-date {
-            font-size: 0.78rem;
-            color: var(--text-3);
-            background: var(--card);
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            padding: 0.4rem 0.85rem;
+            gap: 1rem;
         }
 
-        /* ── Alert ────────────────────────────────────── */
+        .admin-info, .topbar-date {
+            background: var(--surface);
+            padding: 0.5rem 1rem;
+            border-radius: var(--radius-sm);
+            font-size: 0.85rem;
+            border: 1px solid var(--border);
+        }
+
+        /* Alert */
         .alert {
             padding: 0.85rem 1rem;
             border-radius: 10px;
             margin-bottom: 1.2rem;
             font-size: 0.85rem;
         }
-        .alert-success { background: #d1fae5; color: #065f46; border-left: 4px solid #10b981; }
-        .alert-error   { background: #fee2e2; color: #991b1b; border-left: 4px solid #ef4444; }
+        .alert-success { background: rgba(76,217,138,0.15); color: var(--green); border-left: 4px solid var(--green); }
+        .alert-error   { background: rgba(248,113,113,0.15); color: var(--red); border-left: 4px solid var(--red); }
 
-        /* ── Stats mini cards ─────────────────────────── */
+        /* Stats Mini */
         .stats-mini {
             display: grid;
             grid-template-columns: repeat(4, 1fr);
             gap: 1rem;
-            margin-bottom: 1.4rem;
+            margin-bottom: 1.5rem;
         }
         .stat-card {
-            background: var(--card);
-            border-radius: 12px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
             padding: 1rem 1.1rem;
-            box-shadow: var(--shadow);
-            border: 1px solid var(--border-lt);
-            transition: box-shadow 0.2s, transform 0.2s;
+            transition: transform 0.2s;
         }
-        .stat-card:hover { box-shadow: var(--shadow-md); transform: translateY(-1px); }
-        .stat-num { font-size: 1.6rem; font-weight: 800; color: var(--text); line-height: 1; }
-        .stat-label { font-size: 0.72rem; color: var(--text-4); font-weight: 500; margin-top: 4px; text-transform: uppercase; letter-spacing: 0.04em; }
-        .stat-sub { font-size: 0.7rem; color: var(--text-3); margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--border-lt); }
+        .stat-card:hover { transform: translateY(-2px); border-color: var(--border-hv); }
+        .stat-num { font-family: 'Sora', sans-serif; font-size: 1.8rem; font-weight: 800; color: var(--text); line-height: 1; }
+        .stat-label { font-size: 0.7rem; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin-top: 5px; }
+        .stat-sub { font-size: 0.65rem; color: var(--text-dim); margin-top: 6px; padding-top: 5px; border-top: 1px solid var(--border); }
 
-        /* ── Filters & Tabs ───────────────────────────── */
+        /* Filters & Tabs */
         .filters {
             display: flex;
             justify-content: space-between;
@@ -373,22 +437,22 @@ function ago($datetime) {
             display: flex;
             flex-wrap: wrap;
             gap: 0.25rem;
-            background: var(--card);
+            background: var(--surface);
             padding: 0.5rem;
-            border-radius: 14px;
-            border: 1px solid var(--border-lt);
+            border-radius: var(--radius-md);
+            border: 1px solid var(--border);
         }
         .tab {
-            padding: 0.5rem 1rem;
-            font-size: 0.78rem;
+            padding: 0.45rem 1rem;
+            font-size: 0.75rem;
             font-weight: 600;
-            color: var(--text-3);
+            color: var(--text-muted);
             text-decoration: none;
-            border-radius: 8px;
+            border-radius: var(--radius-sm);
             transition: all 0.15s;
         }
-        .tab:hover { background: var(--bg); color: var(--blue); }
-        .tab.active { background: var(--blue); color: #fff; }
+        .tab:hover { background: var(--bg2); color: var(--accent); }
+        .tab.active { background: var(--accent); color: #fff; }
         .tab-divider {
             width: 1px;
             background: var(--border);
@@ -400,75 +464,77 @@ function ago($datetime) {
             align-items: center;
         }
         .search-form input {
-            padding: 0.45rem 0.85rem;
+            padding: 0.5rem 0.85rem;
             border: 1px solid var(--border);
-            border-radius: 8px;
+            border-radius: var(--radius-sm);
             font-size: 0.8rem;
+            background: var(--bg2);
+            color: var(--text);
             width: 240px;
         }
         .search-form button {
-            padding: 0.45rem 1rem;
-            background: var(--blue);
+            padding: 0.5rem 1rem;
+            background: var(--accent);
             color: #fff;
             border: none;
-            border-radius: 8px;
+            border-radius: var(--radius-sm);
             font-size: 0.75rem;
             font-weight: 600;
             cursor: pointer;
         }
 
-        /* ── Card & Table ─────────────────────────────── */
+        /* Card */
         .card {
-            background: var(--card);
-            border-radius: 12px;
-            box-shadow: var(--shadow);
-            border: 1px solid var(--border-lt);
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
             overflow: hidden;
         }
         .card-header {
-            padding: 0.9rem 1.2rem;
-            border-bottom: 1px solid var(--border-lt);
+            padding: 1rem 1.2rem;
+            border-bottom: 1px solid var(--border);
             display: flex;
             align-items: center;
             justify-content: space-between;
         }
         .card-header h2 {
+            font-family: 'Sora', sans-serif;
             font-size: 0.9rem;
             font-weight: 700;
             color: var(--text);
         }
         .count-badge {
-            background: var(--blue-lt);
-            color: var(--blue);
+            background: var(--accent);
+            color: #fff;
             padding: 3px 10px;
             border-radius: 20px;
-            font-size: 0.72rem;
+            font-size: 0.7rem;
             font-weight: 600;
         }
 
-        table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+        /* Table */
+        table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
         th {
             text-align: left;
-            padding: 0.6rem 1rem;
-            background: #fafafa;
-            color: var(--text-4);
+            padding: 0.75rem 1rem;
+            background: var(--bg2);
+            color: var(--text-dim);
             font-weight: 700;
             font-size: 0.68rem;
             text-transform: uppercase;
             letter-spacing: 0.06em;
-            border-bottom: 1px solid var(--border-lt);
+            border-bottom: 1px solid var(--border);
         }
         td {
             padding: 0.75rem 1rem;
-            border-bottom: 1px solid var(--border-lt);
-            color: var(--text-2);
+            border-bottom: 1px solid var(--border);
+            color: var(--text-muted);
             vertical-align: middle;
         }
-        tr:last-child td { border-bottom: none; }
-        tr:hover td { background: #fafbff; }
+        tr:hover td { background: var(--surface-hv); }
 
-        .user-name { font-weight: 600; color: var(--text); font-size: 0.845rem; }
-        .user-id { font-size: 0.7rem; color: var(--text-4); margin-top: 1px; }
+        .user-name { font-weight: 600; color: var(--text); font-size: 0.8rem; }
+        .user-id { font-size: 0.65rem; color: var(--text-dim); margin-top: 2px; }
 
         .role-chip {
             display: inline-flex;
@@ -476,64 +542,58 @@ function ago($datetime) {
             gap: 4px;
             padding: 3px 9px;
             border-radius: 20px;
-            font-size: 0.72rem;
+            font-size: 0.7rem;
             font-weight: 600;
-            background: var(--bg);
-            color: var(--text-2);
+            background: var(--bg2);
+            color: var(--text-muted);
         }
 
         /* Badges */
         .badge {
             display: inline-flex;
             align-items: center;
-            gap: 4px;
+            gap: 5px;
             padding: 3px 9px;
             border-radius: 20px;
             font-size: 0.68rem;
             font-weight: 700;
         }
-        .badge::before {
-            content: '';
-            width: 5px; height: 5px;
-            border-radius: 50%;
-        }
-        .badge-active   { background: #d1fae5; color: #065f46; } .badge-active::before   { background: #10b981; }
-        .badge-inactive { background: #fee2e2; color: #991b1b; } .badge-inactive::before { background: #ef4444; }
-        .badge-pending  { background: #fef3c7; color: #92400e; } .badge-pending::before  { background: #d97706; }
+        .badge-active   { background: rgba(76,217,138,0.15); color: #4cd98a; }
+        .badge-inactive { background: rgba(248,113,113,0.15); color: #f87171; }
+        .badge-pending  { background: rgba(251,191,36,0.15); color: #fbbf24; }
 
         /* Buttons */
         .btn {
             padding: 4px 12px;
             border-radius: 6px;
-            font-size: 0.72rem;
+            font-size: 0.7rem;
             font-weight: 600;
             cursor: pointer;
             border: none;
             transition: all 0.12s;
+            font-family: inherit;
         }
         .btn-secondary {
-            background: var(--bg);
+            background: var(--surface);
             border: 1px solid var(--border);
-            color: var(--text-2);
+            color: var(--text-muted);
         }
         .btn-secondary:hover {
-            background: var(--blue-lt);
-            border-color: var(--blue);
-            color: var(--blue);
+            background: var(--surface-hv);
+            border-color: var(--accent);
+            color: var(--accent);
         }
         .btn-primary {
-            background: var(--blue);
+            background: var(--accent);
             color: #fff;
         }
-        .btn-primary:hover {
-            background: var(--blue-dk);
-        }
+        .btn-primary:hover { background: var(--primary-dk); }
 
         /* Empty state */
         .empty-state {
             text-align: center;
             padding: 2.5rem;
-            color: var(--text-4);
+            color: var(--text-dim);
         }
         .empty-icon {
             font-size: 2.5rem;
@@ -548,7 +608,7 @@ function ago($datetime) {
             align-items: center;
             margin-top: 1.2rem;
             font-size: 0.8rem;
-            color: var(--text-3);
+            color: var(--text-muted);
         }
         .pagination {
             display: flex;
@@ -556,16 +616,16 @@ function ago($datetime) {
         }
         .pagination a, .pagination .current {
             padding: 0.4rem 0.8rem;
-            background: var(--card);
+            background: var(--surface);
             border: 1px solid var(--border);
             border-radius: 6px;
             text-decoration: none;
-            color: var(--text-2);
-            font-size: 0.8rem;
+            color: var(--text-muted);
+            font-size: 0.75rem;
         }
         .pagination .current {
-            background: var(--blue);
-            border-color: var(--blue);
+            background: var(--accent);
+            border-color: var(--accent);
             color: #fff;
         }
 
@@ -574,8 +634,8 @@ function ago($datetime) {
             position: fixed;
             top: 0; left: 0;
             width: 100%; height: 100%;
-            background: rgba(0,0,0,0.5);
-            backdrop-filter: blur(2px);
+            background: rgba(0,0,0,0.6);
+            backdrop-filter: blur(4px);
             display: flex;
             align-items: center;
             justify-content: center;
@@ -589,22 +649,23 @@ function ago($datetime) {
             opacity: 1;
         }
         .modal-content {
-            background: var(--card);
-            border-radius: 20px;
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
             width: 90%;
             max-width: 420px;
             overflow: hidden;
-            box-shadow: var(--shadow-md);
         }
         .modal-header {
             padding: 1rem 1.5rem;
-            background: var(--blue);
+            background: var(--accent);
             color: #fff;
             display: flex;
             justify-content: space-between;
             align-items: center;
         }
         .modal-header h3 {
+            font-family: 'Sora', sans-serif;
             font-size: 1rem;
             font-weight: 700;
         }
@@ -619,31 +680,33 @@ function ago($datetime) {
         .modal-close:hover { opacity: 1; }
         .modal-user-info {
             padding: 1rem 1.5rem;
-            background: var(--blue-lt);
+            background: var(--bg2);
             border-bottom: 1px solid var(--border);
         }
         .modal-user-info strong {
             display: block;
-            font-size: 0.95rem;
+            font-size: 0.9rem;
             color: var(--text);
         }
         .modal-user-info span {
             font-size: 0.75rem;
-            color: var(--text-3);
+            color: var(--text-muted);
         }
         .form-label {
             display: block;
             font-size: 0.75rem;
             font-weight: 700;
             margin-bottom: 4px;
-            color: var(--text-2);
+            color: var(--text-muted);
         }
         .form-select {
             width: 100%;
             padding: 0.6rem;
             border: 1px solid var(--border);
-            border-radius: 8px;
-            font-size: 0.85rem;
+            border-radius: var(--radius-sm);
+            font-size: 0.8rem;
+            background: var(--bg2);
+            color: var(--text);
             font-family: inherit;
         }
         .modal-buttons {
@@ -651,17 +714,39 @@ function ago($datetime) {
             display: flex;
             gap: 0.8rem;
             justify-content: flex-end;
-            border-top: 1px solid var(--border-lt);
+            border-top: 1px solid var(--border);
         }
 
-        /* Responsive */
-        @media (max-width: 900px) {
-            .sidebar { display: none; }
-            .main { margin-left: 0; padding: 1rem; }
+        /* Theme Toggle */
+        .theme-toggle {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            width: 42px;
+            height: 42px;
+            border-radius: 50%;
+            background: var(--surface);
+            backdrop-filter: blur(12px);
+            border: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            color: var(--text);
+            font-size: 1.1rem;
+            z-index: 99;
+            transition: transform 0.2s;
+        }
+        .theme-toggle:hover { transform: scale(1.1); background: var(--surface-hv); }
+
+        @media (max-width: 1024px) {
             .stats-mini { grid-template-columns: repeat(2, 1fr); }
         }
-        @media (max-width: 700px) {
-            .stats-mini { grid-template-columns: 1fr 1fr; }
+        @media (max-width: 768px) {
+            .sidebar { transform: translateX(-100%); }
+            .sidebar.open { transform: translateX(0); }
+            .main { margin-left: 0; padding: 1rem; }
+            .stats-mini { grid-template-columns: 1fr; }
             .filters { flex-direction: column; align-items: stretch; }
             .search-form { justify-content: stretch; }
             .search-form input { flex: 1; }
@@ -670,17 +755,20 @@ function ago($datetime) {
 </head>
 <body>
 
-<!-- Sidebar (identical to dashboard) -->
-<aside class="sidebar">
+<!-- Sidebar -->
+<aside class="sidebar" id="sidebar">
     <div class="sidebar-brand">
         <div class="brand-logo">
-            <div class="brand-icon">📄</div>
-            <div class="brand-name">DocuGo</div>
+            <img id="sidebarLogo" src="../wlogo.png" alt="ADFC Logo">
+            <div class="brand-text">
+                <div class="brand-name">Asian Development<br>Foundation College</div>
+                <div class="brand-sub">DocuGo Admin Panel</div>
+            </div>
         </div>
-        <div class="brand-sub">Admin Panel</div>
     </div>
+
     <nav class="sidebar-menu">
-        <div class="menu-section">Main</div>
+        <div class="menu-section">MAIN</div>
         <a href="dashboard.php" class="menu-item">
             <span class="menu-icon">🏠</span> Dashboard
         </a>
@@ -693,17 +781,21 @@ function ago($datetime) {
                 <span class="menu-badge"><?= $pendingAccs ?></span>
             <?php endif; ?>
         </a>
-        <div class="menu-section">Records</div>
+
+        <div class="menu-section">RECORDS</div>
         <a href="alumni.php" class="menu-item"><span class="menu-icon">🎓</span> Alumni</a>
         <a href="tracer.php" class="menu-item"><span class="menu-icon">📊</span> Graduate Tracer</a>
         <a href="reports.php" class="menu-item"><span class="menu-icon">📈</span> Reports</a>
-        <div class="menu-section">Communication</div>
+
+        <div class="menu-section">COMMUNICATION</div>
         <a href="announcements.php" class="menu-item"><span class="menu-icon">📢</span> Announcements</a>
-        <div class="menu-section">Settings</div>
+
+        <div class="menu-section">SETTINGS</div>
         <a href="document_types.php" class="menu-item"><span class="menu-icon">⚙️</span> Document Types</a>
     </nav>
+
     <div class="sidebar-footer">
-        <a href="../logout.php">🚪 Logout</a>
+        <a href="../logout.php"><span class="menu-icon">🚪</span> Logout</a>
     </div>
 </aside>
 
@@ -716,52 +808,25 @@ function ago($datetime) {
             <p>Manage user accounts, roles, and account statuses.</p>
         </div>
         <div class="topbar-right">
-            <div class="admin-info">
-                <strong><?= e($_SESSION['user_name']) ?></strong>
-            </div>
-            <div class="topbar-date">
-                📅 <?= date('l, F j, Y') ?>
-            </div>
+            <div class="admin-info"><i class="fas fa-user-circle"></i> <strong><?= escape($_SESSION['user_name']) ?></strong></div>
+            <div class="topbar-date"><i class="fas fa-calendar-alt"></i> <?= date('l, F j, Y') ?></div>
         </div>
     </div>
 
     <!-- Alerts -->
     <?php if ($success): ?>
-        <div class="alert alert-success">✅ <?= e($success) ?></div>
+        <div class="alert alert-success"><i class="fas fa-check-circle"></i> <?= escape($success) ?></div>
     <?php endif; ?>
     <?php if ($error): ?>
-        <div class="alert alert-error">⚠️ <?= e($error) ?></div>
+        <div class="alert alert-error"><i class="fas fa-exclamation-triangle"></i> <?= escape($error) ?></div>
     <?php endif; ?>
 
     <!-- Quick Stats -->
-    <?php
-    // Get counts for stats cards
-    $totalActive = $conn->query("SELECT COUNT(*) as c FROM users WHERE status = 'active'")->fetch_assoc()['c'];
-    $totalPending = $conn->query("SELECT COUNT(*) as c FROM users WHERE status = 'pending'")->fetch_assoc()['c'];
-    $totalInactive = $conn->query("SELECT COUNT(*) as c FROM users WHERE status = 'inactive'")->fetch_assoc()['c'];
-    $totalStudents = $conn->query("SELECT COUNT(*) as c FROM users WHERE role = 'student'")->fetch_assoc()['c'];
-    ?>
     <div class="stats-mini">
-        <div class="stat-card">
-            <div class="stat-num"><?= $totalActive ?></div>
-            <div class="stat-label">Active Users</div>
-            <div class="stat-sub">Can log in</div>
-        </div>
-        <div class="stat-card">
-            <div class="stat-num"><?= $totalPending ?></div>
-            <div class="stat-label">Pending Approval</div>
-            <div class="stat-sub">Awaiting activation</div>
-        </div>
-        <div class="stat-card">
-            <div class="stat-num"><?= $totalInactive ?></div>
-            <div class="stat-label">Inactive</div>
-            <div class="stat-sub">Disabled accounts</div>
-        </div>
-        <div class="stat-card">
-            <div class="stat-num"><?= $totalStudents ?></div>
-            <div class="stat-label">Students</div>
-            <div class="stat-sub">+ alumni & staff</div>
-        </div>
+        <div class="stat-card"><div class="stat-num"><?= $totalActive ?></div><div class="stat-label">Active Users</div><div class="stat-sub">Can log in</div></div>
+        <div class="stat-card"><div class="stat-num"><?= $totalPending ?></div><div class="stat-label">Pending Approval</div><div class="stat-sub">Awaiting activation</div></div>
+        <div class="stat-card"><div class="stat-num"><?= $totalInactive ?></div><div class="stat-label">Inactive</div><div class="stat-sub">Disabled accounts</div></div>
+        <div class="stat-card"><div class="stat-num"><?= $totalStudents ?></div><div class="stat-label">Students</div><div class="stat-sub">+ alumni & staff</div></div>
     </div>
 
     <!-- Filters -->
@@ -787,71 +852,49 @@ function ago($datetime) {
         </div>
 
         <form method="GET" class="search-form">
-            <input type="hidden" name="status" value="<?= e($statusFilter) ?>">
-            <input type="hidden" name="role"   value="<?= e($roleFilter) ?>">
-            <input type="text"   name="q"      placeholder="Search name, email, or ID…" value="<?= e($search) ?>">
-            <button type="submit">🔍 Search</button>
+            <input type="hidden" name="status" value="<?= escape($statusFilter) ?>">
+            <input type="hidden" name="role"   value="<?= escape($roleFilter) ?>">
+            <input type="text"   name="q"      placeholder="Search name, email, or ID…" value="<?= escape($search) ?>">
+            <button type="submit"><i class="fas fa-search"></i> Search</button>
         </form>
     </div>
 
     <!-- Table Card -->
     <div class="card">
         <div class="card-header">
-            <h2>📋 Accounts</h2>
+            <h2><i class="fas fa-list"></i> Accounts</h2>
             <span class="count-badge"><?= number_format($totalRows) ?> total</span>
         </div>
 
         <div style="overflow-x: auto;">
             <table>
                 <thead>
-                    <tr>
-                        <th>Name</th>
-                        <th>Email</th>
-                        <th>Role</th>
-                        <th>Status</th>
-                        <th>Joined</th>
-                        <th>Actions</th>
-                    </tr>
+                    <tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th>Joined</th><th>Actions</th></tr>
                 </thead>
                 <tbody>
                     <?php if ($users->num_rows > 0): ?>
                         <?php while ($u = $users->fetch_assoc()): ?>
                             <tr>
                                 <td>
-                                    <div class="user-name"><?= e($u['first_name'] . ' ' . $u['last_name']) ?></div>
+                                    <div class="user-name"><?= escape($u['first_name'] . ' ' . $u['last_name']) ?></div>
                                     <?php if (!empty($u['student_id'])): ?>
-                                        <div class="user-id">ID: <?= e($u['student_id']) ?></div>
+                                        <div class="user-id">ID: <?= escape($u['student_id']) ?></div>
                                     <?php endif; ?>
                                 </td>
-                                <td><?= e($u['email']) ?></td>
-                                <td>
-                                    <span class="role-chip"><?= roleIcon($u['role']) ?> <?= ucfirst(e($u['role'])) ?></span>
-                                </td>
-                                <td>
-                                    <span class="badge badge-<?= badgeClass($u['status']) ?>">
-                                        <?= ucfirst($u['status']) ?>
-                                    </span>
-                                </td>
-                                <td style="color:var(--text-3); font-size:0.75rem; white-space:nowrap;">
-                                    <?= ago($u['created_at']) ?>
-                                </td>
+                                <td><?= escape($u['email']) ?></td>
+                                <td><span class="role-chip"><?= roleIcon($u['role']) ?> <?= ucfirst(escape($u['role'])) ?></span></td>
+                                <td><?= statusBadge($u['status']) ?></td>
+                                <td style="font-size:0.75rem;"><?= timeAgo($u['created_at']) ?></td>
                                 <td>
                                     <button class="btn btn-secondary"
-                                        onclick="openModal(<?= $u['id'] ?>, '<?= e($u['status']) ?>', '<?= e($u['first_name'] . ' ' . $u['last_name']) ?>', '<?= e($u['email']) ?>')">
-                                        ✏️ Update
+                                        onclick="openModal(<?= $u['id'] ?>, '<?= escape($u['status']) ?>', '<?= escape($u['first_name'] . ' ' . $u['last_name']) ?>', '<?= escape($u['email']) ?>')">
+                                        <i class="fas fa-edit"></i> Update
                                     </button>
                                 </td>
                             </tr>
                         <?php endwhile; ?>
                     <?php else: ?>
-                        <tr>
-                            <td colspan="6">
-                                <div class="empty-state">
-                                    <div class="empty-icon">👤</div>
-                                    <p>No accounts found matching your filters.</p>
-                                </div>
-                            </td>
-                        </tr>
+                        <tr><td colspan="6"><div class="empty-state"><div class="empty-icon">👤</div><p>No accounts found matching your filters.</p></div></td></tr>
                     <?php endif; ?>
                 </tbody>
             </table>
@@ -864,7 +907,7 @@ function ago($datetime) {
             <span>Showing page <?= $page ?> of <?= $totalPages ?></span>
             <div class="pagination">
                 <?php if ($page > 1): ?>
-                    <a href="?<?= http_build_query(['status' => $statusFilter, 'role' => $roleFilter, 'q' => $search, 'page' => $page - 1]) ?>">‹ Prev</a>
+                    <a href="?<?= http_build_query(['status' => $statusFilter, 'role' => $roleFilter, 'q' => $search, 'page' => $page - 1]) ?>"><i class="fas fa-chevron-left"></i> Prev</a>
                 <?php endif; ?>
 
                 <?php
@@ -880,7 +923,7 @@ function ago($datetime) {
                 <?php endfor; ?>
 
                 <?php if ($page < $totalPages): ?>
-                    <a href="?<?= http_build_query(['status' => $statusFilter, 'role' => $roleFilter, 'q' => $search, 'page' => $page + 1]) ?>">Next ›</a>
+                    <a href="?<?= http_build_query(['status' => $statusFilter, 'role' => $roleFilter, 'q' => $search, 'page' => $page + 1]) ?>">Next <i class="fas fa-chevron-right"></i></a>
                 <?php endif; ?>
             </div>
         </div>
@@ -892,7 +935,7 @@ function ago($datetime) {
 <div id="updateModal" class="modal">
     <div class="modal-content">
         <div class="modal-header">
-            <h3>Update Account Status</h3>
+            <h3><i class="fas fa-user-edit"></i> Update Account Status</h3>
             <button class="modal-close" onclick="closeModal()" title="Close">✕</button>
         </div>
 
@@ -913,40 +956,63 @@ function ago($datetime) {
             </div>
             <div class="modal-buttons">
                 <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-                <button type="submit" name="update_status" class="btn btn-primary">Save Changes</button>
+                <button type="submit" name="update_status" class="btn btn-primary"><i class="fas fa-save"></i> Save Changes</button>
             </div>
         </form>
     </div>
 </div>
 
+<!-- Theme Toggle -->
+<div class="theme-toggle" id="themeToggleBtn">
+    <i class="fas fa-moon"></i>
+</div>
+
 <script>
-    function openModal(id, status, name, email) {
-        document.getElementById('modalUserId').value    = id;
-        document.getElementById('modalStatus').value   = status;
-        document.getElementById('modalUserName').textContent  = name;
-        document.getElementById('modalUserEmail').textContent = email;
-        document.getElementById('updateModal').classList.add('show');
-    }
+// Theme Toggle
+const applyLogoForTheme = (isLight) => {
+    const logoImg = document.getElementById('sidebarLogo');
+    if (logoImg) logoImg.src = isLight ? '../wlogo.png' : '../wlogo.png';
+};
+const savedTheme = localStorage.getItem('docugoTheme');
+const isLightOnLoad = savedTheme === 'light';
+if (isLightOnLoad) {
+    document.body.classList.add('light');
+    document.getElementById('themeToggleBtn').innerHTML = '<i class="fas fa-sun"></i>';
+} else {
+    document.body.classList.remove('light');
+    document.getElementById('themeToggleBtn').innerHTML = '<i class="fas fa-moon"></i>';
+}
+applyLogoForTheme(isLightOnLoad);
+document.getElementById('themeToggleBtn').addEventListener('click', () => {
+    const isLight = document.body.classList.toggle('light');
+    localStorage.setItem('docugoTheme', isLight ? 'light' : 'dark');
+    document.getElementById('themeToggleBtn').innerHTML = isLight ? '<i class="fas fa-sun"></i>' : '<i class="fas fa-moon"></i>';
+    applyLogoForTheme(isLight);
+});
 
-    function closeModal() {
-        document.getElementById('updateModal').classList.remove('show');
-    }
+// Modal functions
+function openModal(id, status, name, email) {
+    document.getElementById('modalUserId').value    = id;
+    document.getElementById('modalStatus').value   = status;
+    document.getElementById('modalUserName').textContent  = name;
+    document.getElementById('modalUserEmail').textContent = email;
+    document.getElementById('updateModal').classList.add('show');
+}
 
-    // Close on backdrop click
-    document.getElementById('updateModal').addEventListener('click', function(e) {
-        if (e.target === this) closeModal();
-    });
+function closeModal() {
+    document.getElementById('updateModal').classList.remove('show');
+}
 
-    // Close on Escape key
-    document.addEventListener('keydown', function(e) {
-        if (e.key === 'Escape') closeModal();
-    });
+// Close on backdrop click
+document.getElementById('updateModal').addEventListener('click', function(e) {
+    if (e.target === this) closeModal();
+});
+
+// Close on Escape key
+document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') closeModal();
+});
 </script>
 
 </body>
 </html>
-<?php
-$stmt->close();
-$conn->close();
-?>
-```

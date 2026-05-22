@@ -95,7 +95,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     }
 
-    // Redirect to avoid form resubmission
     header("Location: announcements.php?msg=" . urlencode($message) . "&msgtype=" . $messageType);
     exit();
 }
@@ -121,7 +120,7 @@ $systemWideAnnouncements = count(array_filter($announcements, fn($a) => $a['targ
 
 $conn->close();
 
-function e($v) { return htmlspecialchars($v ?? ''); }
+function escape($v) { return htmlspecialchars($v ?? ''); }
 
 function timeAgo($datetime) {
     if (!$datetime) return '—';
@@ -138,286 +137,338 @@ function timeAgo($datetime) {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Announcements — DocuGo Admin</title>
-    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+    <title>Announcements — ADFC DocuGo</title>
+    <link href="https://fonts.googleapis.com/css2?family=Sora:wght@300;400;600;700;800&family=DM+Sans:ital,wght@0,300;0,400;0,500;1,300&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
     <style>
-        /* ── Reset & Base ─────────────────────────────── */
-        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
+        /* ========== THEME VARIABLES ========== */
         :root {
-            --blue:      #1a56db;
-            --blue-dk:   #1447c0;
-            --blue-lt:   #eff6ff;
-            --green:     #059669;
-            --green-lt:  #f0fdf4;
-            --yellow:    #d97706;
-            --yellow-lt: #fffbeb;
-            --purple:    #7c3aed;
-            --purple-lt: #faf5ff;
-            --red:       #dc2626;
-            --red-lt:    #fef2f2;
-            --bg:        #f0f4f8;
-            --card:      #ffffff;
-            --border:    #e5e7eb;
-            --border-lt: #f3f4f6;
-            --text:      #111827;
-            --text-2:    #374151;
-            --text-3:    #6b7280;
-            --text-4:    #9ca3af;
-            --sidebar:   220px;
-            --shadow:    0 1px 4px rgba(0,0,0,0.06);
-            --shadow-md: 0 4px 16px rgba(0,0,0,0.08);
+            --primary:    #1a3ec7;
+            --primary-dk: #1230a0;
+            --accent:     #3b6bff;
+            --accent2:    #6b9fff;
+            --bg:         #080e28;
+            --bg2:        #0b1535;
+            --bg3:        #0e1c42;
+            --surface:    rgba(255,255,255,0.05);
+            --surface-hv: rgba(255,255,255,0.08);
+            --border:     rgba(255,255,255,0.08);
+            --border-hv:  rgba(59,107,255,0.25);
+            --text:       #dce6f8;
+            --text-muted: #7a96c4;
+            --text-dim:   #4a6190;
+            --green:      #4cd98a;
+            --yellow:     #fbbf24;
+            --purple:     #a78bfa;
+            --red:        #f87171;
+            --blue:       #60a5fa;
+            --radius-sm:  8px;
+            --radius-md:  12px;
+            --radius-lg:  16px;
+            --radius-xl:  24px;
+            --sidebar-width: 260px;
+            --ease-out:   cubic-bezier(0.16, 1, 0.3, 1);
+            --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+            
+            --sidebar-bg: #0f2a6b;
+            --sidebar-border: rgba(255,255,255,0.1);
+            --sidebar-text: #b8c9f0;
+            --sidebar-text-hover: #ffffff;
+            --sidebar-active-bg: rgba(59,107,255,0.25);
+            --sidebar-active-color: #ffffff;
+            --sidebar-section: #8eabff;
+            --card-bg: rgba(255,255,255,0.05);
         }
+
+        body.light {
+            --bg:         #eef2ff;
+            --bg2:        #e2e9ff;
+            --bg3:        #d8e2ff;
+            --surface:    rgba(255,255,255,0.6);
+            --surface-hv: rgba(255,255,255,0.85);
+            --border:     rgba(26,62,199,0.1);
+            --border-hv:  rgba(26,62,199,0.25);
+            --text:       #0c1836;
+            --text-muted: #3d5a92;
+            --text-dim:   #7a96c4;
+            --card-bg: #ffffff;
+            
+            --sidebar-bg: #2d4ed6;
+            --sidebar-border: rgba(255,255,255,0.15);
+            --sidebar-text: #e0e8ff;
+            --sidebar-text-hover: #ffffff;
+            --sidebar-active-bg: rgba(255,255,255,0.2);
+            --sidebar-active-color: #ffffff;
+            --sidebar-section: #c7d5ff;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
 
         body {
-            font-family: 'Plus Jakarta Sans', 'Segoe UI', sans-serif;
+            font-family: 'DM Sans', sans-serif;
             background: var(--bg);
             color: var(--text);
-            min-height: 100vh;
+            transition: background 0.3s, color 0.3s;
+            overflow-x: hidden;
             display: flex;
-            font-size: 14px;
-            line-height: 1.5;
         }
 
-        /* ── Sidebar (matching dashboard) ───────────────── */
+        /* ========== SIDEBAR ========== */
         .sidebar {
-            width: var(--sidebar);
-            background: var(--blue);
-            color: #fff;
-            min-height: 100vh;
-            flex-shrink: 0;
+            position: fixed;
+            left: 0;
+            top: 0;
+            width: var(--sidebar-width);
+            height: 100vh;
+            background: var(--sidebar-bg);
+            border-right: 1px solid var(--sidebar-border);
             display: flex;
             flex-direction: column;
-            position: fixed;
-            top: 0; left: 0; height: 100%;
             z-index: 100;
-            border-right: 1px solid rgba(255,255,255,0.1);
+            transition: transform 0.3s var(--ease-out), background 0.3s;
         }
 
         .sidebar-brand {
-            padding: 1.4rem 1.2rem 1.2rem;
-            border-bottom: 1px solid rgba(255,255,255,0.07);
+            padding: 1.5rem 1.2rem;
+            border-bottom: 1px solid var(--sidebar-border);
+            margin-bottom: 1rem;
         }
 
         .brand-logo {
             display: flex;
             align-items: center;
-            gap: 0.65rem;
-            margin-bottom: 0.2rem;
+            gap: 12px;
         }
 
-        .brand-icon {
-            width: 34px; height: 34px;
-            background: var(--blue);
-            border-radius: 9px;
-            display: flex; align-items: center; justify-content: center;
-            font-size: 1rem;
-            box-shadow: 0 2px 8px rgba(26,86,219,0.4);
+        .brand-logo img {
+            width: 48px;
+            height: 48px;
+            object-fit: contain;
+            border-radius: 12px;
+            transition: transform 0.3s var(--ease-spring);
+        }
+
+        .brand-logo img:hover {
+            transform: rotate(-5deg) scale(1.05);
+        }
+
+        .brand-text {
+            flex: 1;
         }
 
         .brand-name {
-            font-size: 1.2rem;
+            font-family: 'Sora', sans-serif;
             font-weight: 800;
-            color: #fff;
-            letter-spacing: -0.4px;
+            font-size: 0.9rem;
+            color: white;
+            line-height: 1.2;
         }
 
         .brand-sub {
-            font-size: 0.67rem;
-            color: rgba(255,255,255,0.4);
-            text-transform: uppercase;
-            letter-spacing: 0.08em;
-            font-weight: 600;
-            padding-left: 2.9rem;
+            font-size: 0.55rem;
+            color: rgba(255,255,255,0.7);
+            margin-top: 3px;
+            letter-spacing: 0.3px;
         }
 
-        .sidebar-menu { padding: 0.85rem 0; flex: 1; overflow-y: auto; }
-
-        .sidebar-footer {
-            padding: 0.9rem 1rem;
-            border-top: 1px solid rgba(255,255,255,0.15);
-            font-size: 0.8rem;
+        .sidebar-menu {
+            flex: 1;
+            padding: 0 0.8rem;
         }
-
-        .sidebar-footer a {
-            color: rgba(255,255,255,0.85);
-            text-decoration: none;
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-            transition: color 0.15s;
-        }
-
-        .sidebar-footer a:hover { color: #fff; }
 
         .menu-section {
-            padding: 0.8rem 1rem 0.2rem;
-            font-size: 0.62rem;
+            font-size: 0.65rem;
             font-weight: 700;
             text-transform: uppercase;
-            letter-spacing: 0.1em;
-            color: rgba(255,255,255,0.3);
+            letter-spacing: 1px;
+            color: var(--sidebar-section);
+            padding: 0.8rem 0.8rem 0.5rem;
         }
 
         .menu-item {
             display: flex;
             align-items: center;
-            gap: 0.7rem;
-            padding: 0.58rem 1rem;
-            margin: 1px 0.6rem;
-            border-radius: 8px;
-            color: rgba(255,255,255,0.6);
+            gap: 12px;
+            padding: 0.7rem 0.8rem;
+            border-radius: var(--radius-sm);
+            color: var(--sidebar-text);
             text-decoration: none;
-            font-size: 0.845rem;
+            font-size: 0.85rem;
             font-weight: 500;
-            transition: background 0.15s, color 0.15s;
-            position: relative;
+            transition: all 0.2s;
+            margin-bottom: 2px;
         }
 
-        .menu-item:hover  { background: rgba(255,255,255,0.07); color: rgba(255,255,255,0.9); }
-        .menu-item.active { background: rgba(255,255,255,0.15); color: #fff; font-weight: 600; }
-        .menu-item.active::before {
-            content: '';
-            position: absolute;
-            left: -0.6rem; top: 50%;
-            transform: translateY(-50%);
-            width: 3px; height: 20px;
-            background: #fff;
-            border-radius: 0 3px 3px 0;
+        .menu-item:hover {
+            background: var(--sidebar-active-bg);
+            color: var(--sidebar-text-hover);
         }
 
-        .menu-icon { font-size: 0.95rem; width: 18px; text-align: center; flex-shrink: 0; }
+        .menu-item.active {
+            background: var(--sidebar-active-bg);
+            color: var(--sidebar-active-color);
+            border-left: 2px solid white;
+        }
+
+        .menu-icon {
+            font-size: 1.1rem;
+            width: 24px;
+        }
+
         .menu-badge {
             margin-left: auto;
-            background: var(--red);
-            color: #fff;
-            font-size: 0.6rem;
-            font-weight: 800;
-            padding: 1px 6px;
-            border-radius: 8px;
-            min-width: 18px;
-            text-align: center;
+            background: rgba(255,255,255,0.25);
+            color: white;
+            font-size: 0.65rem;
+            font-weight: 700;
+            padding: 2px 8px;
+            border-radius: 20px;
         }
-        .menu-badge.yellow { background: var(--yellow); }
 
-        /* ── Main content ──────────────────────────────── */
-        .main { margin-left: var(--sidebar); flex: 1; padding: 1.8rem 2rem; min-width: 0; }
+        .menu-badge.yellow { background: var(--yellow); color: #1a1a2e; }
 
-        /* ── Topbar ───────────────────────────────────── */
-        .topbar {
+        .sidebar-footer {
+            padding: 1rem 0.8rem;
+            border-top: 1px solid var(--sidebar-border);
+            margin-top: auto;
+        }
+
+        .sidebar-footer a {
             display: flex;
             align-items: center;
+            gap: 10px;
+            padding: 0.7rem 0.8rem;
+            color: var(--sidebar-text);
+            text-decoration: none;
+            border-radius: var(--radius-sm);
+            transition: all 0.2s;
+        }
+
+        .sidebar-footer a:hover {
+            background: var(--sidebar-active-bg);
+            color: var(--red);
+        }
+
+        /* ========== MAIN CONTENT ========== */
+        .main {
+            margin-left: var(--sidebar-width);
+            padding: 1.5rem 2rem;
+            min-height: 100vh;
+            flex: 1;
+        }
+
+        /* Topbar */
+        .topbar {
+            display: flex;
             justify-content: space-between;
-            margin-bottom: 1.6rem;
+            align-items: center;
+            margin-bottom: 2rem;
+            flex-wrap: wrap;
             gap: 1rem;
         }
+
         .topbar-left h1 {
-            font-size: 1.4rem;
-            font-weight: 800;
+            font-family: 'Sora', sans-serif;
+            font-size: 1.6rem;
+            font-weight: 700;
             color: var(--text);
-            letter-spacing: -0.3px;
+            margin-bottom: 0.2rem;
         }
+
         .topbar-left p {
-            font-size: 0.82rem;
-            color: var(--text-3);
-            margin-top: 1px;
+            color: var(--text-muted);
+            font-size: 0.85rem;
         }
+
         .topbar-right {
             display: flex;
             align-items: center;
-            gap: 0.75rem;
-        }
-        .admin-info {
-            font-size: 0.85rem;
-            background: var(--card);
-            padding: 0.4rem 0.9rem;
-            border-radius: 20px;
-            border: 1px solid var(--border);
-        }
-        .topbar-date {
-            font-size: 0.78rem;
-            color: var(--text-3);
-            background: var(--card);
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            padding: 0.4rem 0.85rem;
+            gap: 1rem;
         }
 
-        /* ── Alert ────────────────────────────────────── */
+        .admin-info, .topbar-date {
+            background: var(--surface);
+            padding: 0.5rem 1rem;
+            border-radius: var(--radius-sm);
+            font-size: 0.85rem;
+            border: 1px solid var(--border);
+        }
+
+        /* Alert */
         .alert {
             padding: 0.85rem 1rem;
             border-radius: 10px;
             margin-bottom: 1.2rem;
             font-size: 0.85rem;
         }
-        .alert-success { background: #d1fae5; color: #065f46; border-left: 4px solid #10b981; }
-        .alert-error   { background: #fee2e2; color: #991b1b; border-left: 4px solid #ef4444; }
+        .alert-success { background: rgba(76,217,138,0.15); color: var(--green); border-left: 4px solid var(--green); }
+        .alert-error   { background: rgba(248,113,113,0.15); color: var(--red); border-left: 4px solid var(--red); }
 
-        /* ── Stats Cards ──────────────────────────────── */
+        /* Stats Row */
         .stats-row {
             display: grid;
             grid-template-columns: repeat(3, 1fr);
             gap: 1rem;
-            margin-bottom: 1.4rem;
+            margin-bottom: 1.5rem;
         }
         .stat-card {
-            background: var(--card);
-            border-radius: 12px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
             padding: 1rem 1.1rem;
-            box-shadow: var(--shadow);
-            border: 1px solid var(--border-lt);
             display: flex;
             align-items: center;
             gap: 0.75rem;
-            transition: box-shadow 0.2s, transform 0.2s;
+            transition: transform 0.2s;
         }
-        .stat-card:hover { box-shadow: var(--shadow-md); transform: translateY(-1px); }
+        .stat-card:hover { transform: translateY(-2px); border-color: var(--border-hv); }
         .stat-icon {
             width: 48px; height: 48px;
-            border-radius: 12px;
+            border-radius: var(--radius-md);
             display: flex;
             align-items: center;
             justify-content: center;
             font-size: 1.4rem;
         }
-        .stat-icon.blue   { background: var(--blue-lt); }
-        .stat-icon.green  { background: var(--green-lt); }
-        .stat-icon.yellow { background: var(--yellow-lt); }
-        .stat-info .stat-value {
+        .stat-icon.blue { background: rgba(96,165,250,0.15); color: #60a5fa; }
+        .stat-icon.green { background: rgba(76,217,138,0.15); color: #4cd98a; }
+        .stat-icon.yellow { background: rgba(251,191,36,0.15); color: #fbbf24; }
+        .stat-value {
+            font-family: 'Sora', sans-serif;
             font-size: 1.6rem;
             font-weight: 800;
             color: var(--text);
             line-height: 1;
         }
-        .stat-info .stat-label {
+        .stat-label {
             font-size: 0.7rem;
-            color: var(--text-4);
+            color: var(--text-muted);
             font-weight: 500;
             letter-spacing: 0.04em;
         }
 
-        /* ── Card ─────────────────────────────────────── */
+        /* Cards */
         .card {
-            background: var(--card);
-            border-radius: 12px;
-            box-shadow: var(--shadow);
-            border: 1px solid var(--border-lt);
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
             overflow: hidden;
             margin-bottom: 1.5rem;
         }
         .card-header {
             padding: 0.9rem 1.2rem;
-            border-bottom: 1px solid var(--border-lt);
-            background: #fafafa;
+            border-bottom: 1px solid var(--border);
+            background: var(--bg2);
         }
         .card-header h2 {
+            font-family: 'Sora', sans-serif;
             font-size: 0.9rem;
             font-weight: 700;
             color: var(--text);
         }
         .card-body { padding: 1.2rem; }
 
-        /* ── Form ─────────────────────────────────────── */
+        /* Form */
         .form-grid {
             display: flex;
             flex-direction: column;
@@ -429,19 +480,21 @@ function timeAgo($datetime) {
             font-size: 0.75rem;
             font-weight: 700;
             margin-bottom: 0.4rem;
-            color: var(--text-2);
+            color: var(--text-muted);
         }
-        .required { color: #e11d48; }
+        .required { color: var(--red); }
         .form-control {
             width: 100%;
             padding: 0.6rem 0.85rem;
             border: 1px solid var(--border);
-            border-radius: 8px;
+            border-radius: var(--radius-sm);
             font-size: 0.85rem;
             font-family: inherit;
+            background: var(--bg2);
+            color: var(--text);
             transition: border-color 0.15s;
         }
-        .form-control:focus { outline: none; border-color: var(--blue); }
+        .form-control:focus { outline: none; border-color: var(--accent); }
         textarea.form-control { min-height: 100px; resize: vertical; }
 
         .target-selector {
@@ -455,18 +508,13 @@ function timeAgo($datetime) {
             gap: 0.5rem;
             font-size: 0.85rem;
             cursor: pointer;
+            color: var(--text-muted);
         }
         .radio-label input { cursor: pointer; }
 
-        .user-search-box {
-            display: none;
-        }
-        .user-search-box.open {
-            display: block;
-        }
-        .search-input-wrapper {
-            position: relative;
-        }
+        .user-search-box { display: none; }
+        .user-search-box.open { display: block; }
+        .search-input-wrapper { position: relative; }
         .search-icon {
             position: absolute;
             left: 12px;
@@ -474,14 +522,13 @@ function timeAgo($datetime) {
             transform: translateY(-50%);
             font-size: 0.85rem;
             opacity: 0.6;
+            color: var(--text-dim);
         }
-        .search-input-wrapper input {
-            padding-left: 32px;
-        }
+        .search-input-wrapper input { padding-left: 32px; }
         .user-results {
-            background: var(--card);
+            background: var(--card-bg);
             border: 1px solid var(--border);
-            border-radius: 8px;
+            border-radius: var(--radius-sm);
             margin-top: 0.5rem;
             max-height: 200px;
             overflow-y: auto;
@@ -490,21 +537,23 @@ function timeAgo($datetime) {
         .user-result-item {
             padding: 0.6rem 0.85rem;
             cursor: pointer;
-            border-bottom: 1px solid var(--border-lt);
+            border-bottom: 1px solid var(--border);
             transition: background 0.12s;
         }
-        .user-result-item:hover { background: var(--blue-lt); }
-        .user-result-item .name { font-weight: 600; font-size: 0.85rem; }
-        .user-result-item .meta { font-size: 0.7rem; color: var(--text-4); margin-top: 2px; }
+        .user-result-item:hover { background: var(--surface-hv); }
+        .user-result-item .name { font-weight: 600; font-size: 0.85rem; color: var(--text); }
+        .user-result-item .meta { font-size: 0.7rem; color: var(--text-dim); margin-top: 2px; }
         .selected-user {
-            background: var(--blue-lt);
+            background: var(--surface);
             padding: 0.5rem 0.75rem;
-            border-radius: 8px;
+            border-radius: var(--radius-sm);
             margin-top: 0.5rem;
             display: inline-flex;
             align-items: center;
             gap: 0.5rem;
             font-size: 0.85rem;
+            border: 1px solid var(--border);
+            color: var(--text);
         }
         .selected-user .remove {
             cursor: pointer;
@@ -516,7 +565,7 @@ function timeAgo($datetime) {
         /* Buttons */
         .btn {
             padding: 0.55rem 1.2rem;
-            border-radius: 8px;
+            border-radius: var(--radius-sm);
             font-size: 0.8rem;
             font-weight: 600;
             cursor: pointer;
@@ -524,22 +573,12 @@ function timeAgo($datetime) {
             transition: all 0.12s;
             font-family: inherit;
         }
-        .btn-primary {
-            background: var(--blue);
-            color: #fff;
-        }
-        .btn-primary:hover { background: var(--blue-dk); }
-        .btn-secondary {
-            background: var(--bg);
-            border: 1px solid var(--border);
-            color: var(--text-2);
-        }
-        .btn-secondary:hover { background: var(--blue-lt); border-color: var(--blue); color: var(--blue); }
-        .btn-danger {
-            background: #fee2e2;
-            color: #991b1b;
-        }
-        .btn-danger:hover { background: #fecaca; }
+        .btn-primary { background: var(--accent); color: #fff; }
+        .btn-primary:hover { background: var(--primary-dk); transform: translateY(-1px); }
+        .btn-secondary { background: var(--surface); border: 1px solid var(--border); color: var(--text-muted); }
+        .btn-secondary:hover { background: var(--surface-hv); border-color: var(--accent); color: var(--accent); }
+        .btn-danger { background: rgba(248,113,113,0.15); color: var(--red); }
+        .btn-danger:hover { background: rgba(248,113,113,0.25); }
         .btn-sm { padding: 0.3rem 0.8rem; font-size: 0.7rem; }
 
         /* Announcement List */
@@ -549,17 +588,17 @@ function timeAgo($datetime) {
             gap: 1rem;
         }
         .announcement-item {
-            background: var(--card);
-            border-radius: 12px;
-            border: 1px solid var(--border-lt);
+            background: var(--card-bg);
+            border-radius: var(--radius-lg);
+            border: 1px solid var(--border);
             overflow: hidden;
             transition: box-shadow 0.15s;
         }
         .announcement-item:hover { box-shadow: var(--shadow-md); }
         .announcement-header {
             padding: 1rem 1.2rem;
-            background: #fafafa;
-            border-bottom: 1px solid var(--border-lt);
+            background: var(--bg2);
+            border-bottom: 1px solid var(--border);
             display: flex;
             justify-content: space-between;
             align-items: flex-start;
@@ -577,12 +616,12 @@ function timeAgo($datetime) {
             flex-wrap: wrap;
             gap: 0.75rem;
             font-size: 0.7rem;
-            color: var(--text-4);
+            color: var(--text-dim);
         }
         .announcement-body {
             padding: 1.2rem;
             font-size: 0.85rem;
-            color: var(--text-2);
+            color: var(--text-muted);
             line-height: 1.6;
         }
         .badge {
@@ -594,20 +633,41 @@ function timeAgo($datetime) {
             font-size: 0.65rem;
             font-weight: 700;
         }
-        .badge-all { background: var(--blue-lt); color: var(--blue); }
-        .badge-user { background: var(--purple-lt); color: var(--purple); }
+        .badge-all { background: rgba(96,165,250,0.15); color: #60a5fa; }
+        .badge-user { background: rgba(167,139,250,0.15); color: #a78bfa; }
 
         .empty-state {
             text-align: center;
             padding: 3rem;
-            background: var(--card);
-            border-radius: 12px;
-            border: 1px solid var(--border-lt);
+            background: var(--card-bg);
+            border-radius: var(--radius-lg);
+            border: 1px solid var(--border);
         }
-        .empty-state h3 { font-size: 1rem; margin-bottom: 0.25rem; color: var(--text-2); }
-        .empty-state p { font-size: 0.8rem; color: var(--text-4); }
+        .empty-state h3 { font-size: 1rem; margin-bottom: 0.25rem; color: var(--text-muted); }
+        .empty-state p { font-size: 0.8rem; color: var(--text-dim); }
 
-        /* Responsive */
+        /* Theme Toggle */
+        .theme-toggle {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            width: 42px;
+            height: 42px;
+            border-radius: 50%;
+            background: var(--surface);
+            backdrop-filter: blur(12px);
+            border: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            color: var(--text);
+            font-size: 1.1rem;
+            z-index: 99;
+            transition: transform 0.2s;
+        }
+        .theme-toggle:hover { transform: scale(1.1); background: var(--surface-hv); }
+
         @media (max-width: 900px) {
             .sidebar { display: none; }
             .main { margin-left: 0; padding: 1rem; }
@@ -621,17 +681,20 @@ function timeAgo($datetime) {
 </head>
 <body>
 
-<!-- Sidebar (identical to dashboard) -->
-<aside class="sidebar">
+<!-- Sidebar -->
+<aside class="sidebar" id="sidebar">
     <div class="sidebar-brand">
         <div class="brand-logo">
-            <div class="brand-icon">📄</div>
-            <div class="brand-name">DocuGo</div>
+            <img id="sidebarLogo" src="../wlogo.png" alt="ADFC Logo">
+            <div class="brand-text">
+                <div class="brand-name">Asian Development<br>Foundation College</div>
+                <div class="brand-sub">DocuGo Admin Panel</div>
+            </div>
         </div>
-        <div class="brand-sub">Admin Panel</div>
     </div>
+
     <nav class="sidebar-menu">
-        <div class="menu-section">Main</div>
+        <div class="menu-section">MAIN</div>
         <a href="dashboard.php" class="menu-item">
             <span class="menu-icon">🏠</span> Dashboard
         </a>
@@ -647,7 +710,8 @@ function timeAgo($datetime) {
                 <span class="menu-badge"><?= $pendingAccs ?></span>
             <?php endif; ?>
         </a>
-        <div class="menu-section">Records</div>
+
+        <div class="menu-section">RECORDS</div>
         <a href="alumni.php" class="menu-item">
             <span class="menu-icon">🎓</span> Alumni
         </a>
@@ -657,17 +721,20 @@ function timeAgo($datetime) {
         <a href="reports.php" class="menu-item">
             <span class="menu-icon">📈</span> Reports
         </a>
-        <div class="menu-section">Communication</div>
+
+        <div class="menu-section">COMMUNICATION</div>
         <a href="announcements.php" class="menu-item active">
             <span class="menu-icon">📢</span> Announcements
         </a>
-        <div class="menu-section">Settings</div>
+
+        <div class="menu-section">SETTINGS</div>
         <a href="document_types.php" class="menu-item">
             <span class="menu-icon">⚙️</span> Document Types
         </a>
     </nav>
+
     <div class="sidebar-footer">
-        <a href="../logout.php">🚪 Logout</a>
+        <a href="../logout.php"><span class="menu-icon">🚪</span> Logout</a>
     </div>
 </aside>
 
@@ -676,55 +743,42 @@ function timeAgo($datetime) {
     <!-- Topbar -->
     <div class="topbar">
         <div class="topbar-left">
-            <h1>📢 Announcements</h1>
+            <h1><i class="fas fa-bullhorn"></i> Announcements</h1>
             <p>Create and manage system announcements for users.</p>
         </div>
         <div class="topbar-right">
-            <div class="admin-info">
-                <strong><?= e($_SESSION['user_name']) ?></strong>
-            </div>
-            <div class="topbar-date">
-                📅 <?= date('l, F j, Y') ?>
-            </div>
+            <div class="admin-info"><i class="fas fa-user-circle"></i> <strong><?= escape($_SESSION['user_name']) ?></strong></div>
+            <div class="topbar-date"><i class="fas fa-calendar-alt"></i> <?= date('l, F j, Y') ?></div>
         </div>
     </div>
 
     <!-- Flash Messages -->
     <?php if ($message): ?>
     <div class="alert alert-<?= $messageType ?>">
-        <?= e($message) ?>
+        <i class="fas <?= $messageType === 'success' ? 'fa-check-circle' : 'fa-exclamation-triangle' ?>"></i> <?= escape($message) ?>
     </div>
     <?php endif; ?>
 
     <!-- Stats Cards -->
     <div class="stats-row">
         <div class="stat-card">
-            <div class="stat-icon blue">📢</div>
-            <div class="stat-info">
-                <div class="stat-value"><?= $totalAnnouncements ?></div>
-                <div class="stat-label">Total Announcements</div>
-            </div>
+            <div class="stat-icon blue"><i class="fas fa-bullhorn"></i></div>
+            <div><div class="stat-value"><?= $totalAnnouncements ?></div><div class="stat-label">Total Announcements</div></div>
         </div>
         <div class="stat-card">
-            <div class="stat-icon green">👥</div>
-            <div class="stat-info">
-                <div class="stat-value"><?= $targetedAnnouncements ?></div>
-                <div class="stat-label">Targeted to User</div>
-            </div>
+            <div class="stat-icon green"><i class="fas fa-user"></i></div>
+            <div><div class="stat-value"><?= $targetedAnnouncements ?></div><div class="stat-label">Targeted to User</div></div>
         </div>
         <div class="stat-card">
-            <div class="stat-icon yellow">🌍</div>
-            <div class="stat-info">
-                <div class="stat-value"><?= $systemWideAnnouncements ?></div>
-                <div class="stat-label">System-wide</div>
-            </div>
+            <div class="stat-icon yellow"><i class="fas fa-globe"></i></div>
+            <div><div class="stat-value"><?= $systemWideAnnouncements ?></div><div class="stat-label">System-wide</div></div>
         </div>
     </div>
 
     <!-- Compose Announcement Card -->
     <div class="card">
         <div class="card-header">
-            <h2>✍️ Compose New Announcement</h2>
+            <h2><i class="fas fa-edit"></i> Compose New Announcement</h2>
         </div>
         <div class="card-body">
             <form method="POST" id="announcementForm">
@@ -747,11 +801,11 @@ function timeAgo($datetime) {
                         <div class="target-selector">
                             <label class="radio-label">
                                 <input type="radio" name="target_type" value="all" checked onchange="toggleUserSearch()">
-                                🌍 All Users (System-wide)
+                                <i class="fas fa-globe"></i> All Users (System-wide)
                             </label>
                             <label class="radio-label">
                                 <input type="radio" name="target_type" value="user" onchange="toggleUserSearch()">
-                                👤 Specific User
+                                <i class="fas fa-user"></i> Specific User
                             </label>
                         </div>
                     </div>
@@ -759,7 +813,7 @@ function timeAgo($datetime) {
                     <div class="form-group full user-search-box" id="userSearchBox">
                         <label class="form-label">Search User</label>
                         <div class="search-input-wrapper">
-                            <span class="search-icon">🔍</span>
+                            <span class="search-icon"><i class="fas fa-search"></i></span>
                             <input type="text" id="userSearchInput" class="form-control" placeholder="Search by name or email…">
                         </div>
                         <div class="user-results" id="userResults" style="display:none;"></div>
@@ -769,8 +823,8 @@ function timeAgo($datetime) {
                 </div>
 
                 <div style="display:flex;gap:0.75rem; margin-top: 1rem;">
-                    <button type="submit" class="btn btn-primary">📤 Send Announcement</button>
-                    <button type="button" class="btn btn-secondary" id="cancelEditBtn" style="display:none;" onclick="cancelEdit()">✕ Cancel</button>
+                    <button type="submit" class="btn btn-primary"><i class="fas fa-paper-plane"></i> Send Announcement</button>
+                    <button type="button" class="btn btn-secondary" id="cancelEditBtn" style="display:none;" onclick="cancelEdit()"><i class="fas fa-times"></i> Cancel</button>
                 </div>
             </form>
         </div>
@@ -789,29 +843,29 @@ function timeAgo($datetime) {
             <div class="announcement-item">
                 <div class="announcement-header">
                     <div>
-                        <div class="announcement-title"><?= e($ann['title']) ?></div>
+                        <div class="announcement-title"><?= escape($ann['title']) ?></div>
                         <div class="announcement-meta">
-                            <span>👤 <?= e($ann['first_name'] . ' ' . $ann['last_name']) ?></span>
-                            <span>🕐 <?= timeAgo($ann['created_at']) ?></span>
+                            <span><i class="fas fa-user"></i> <?= escape($ann['first_name'] . ' ' . $ann['last_name']) ?></span>
+                            <span><i class="fas fa-clock"></i> <?= timeAgo($ann['created_at']) ?></span>
                             <span class="badge <?= $ann['target_type'] === 'all' ? 'badge-all' : 'badge-user' ?>">
-                                <?= $ann['target_type'] === 'all' ? '🌍 All Users' : '👤 Specific User' ?>
+                                <?= $ann['target_type'] === 'all' ? '<i class="fas fa-globe"></i> All Users' : '<i class="fas fa-user"></i> Specific User' ?>
                             </span>
                             <?php if ($ann['target_type'] === 'user' && $ann['target_user_id']): ?>
-                                <span>→ User ID: <?= $ann['target_user_id'] ?></span>
+                                <span><i class="fas fa-id-card"></i> User ID: <?= $ann['target_user_id'] ?></span>
                             <?php endif; ?>
                         </div>
                     </div>
                     <div style="display:flex;gap:0.5rem;">
-                        <button class="btn btn-secondary btn-sm" onclick="editAnnouncement(<?= $ann['id'] ?>)">✏️ Edit</button>
+                        <button class="btn btn-secondary btn-sm" onclick="editAnnouncement(<?= $ann['id'] ?>)"><i class="fas fa-edit"></i> Edit</button>
                         <form method="POST" style="display:inline;" onsubmit="return confirm('Delete this announcement?')">
                             <input type="hidden" name="action" value="delete">
                             <input type="hidden" name="announcement_id" value="<?= $ann['id'] ?>">
-                            <button type="submit" class="btn btn-danger btn-sm">🗑 Delete</button>
+                            <button type="submit" class="btn btn-danger btn-sm"><i class="fas fa-trash"></i> Delete</button>
                         </form>
                     </div>
                 </div>
                 <div class="announcement-body">
-                    <?= nl2br(e($ann['message'])) ?>
+                    <?= nl2br(escape($ann['message'])) ?>
                 </div>
             </div>
             <?php endforeach; ?>
@@ -819,7 +873,35 @@ function timeAgo($datetime) {
     </div>
 </main>
 
+<!-- Theme Toggle -->
+<div class="theme-toggle" id="themeToggleBtn">
+    <i class="fas fa-moon"></i>
+</div>
+
 <script>
+// Theme Toggle
+const applyLogoForTheme = (isLight) => {
+    const logoImg = document.getElementById('sidebarLogo');
+    if (logoImg) logoImg.src = isLight ? '../wlogo.png' : '../wlogo.png';
+};
+const savedTheme = localStorage.getItem('docugoTheme');
+const isLightOnLoad = savedTheme === 'light';
+if (isLightOnLoad) {
+    document.body.classList.add('light');
+    document.getElementById('themeToggleBtn').innerHTML = '<i class="fas fa-sun"></i>';
+} else {
+    document.body.classList.remove('light');
+    document.getElementById('themeToggleBtn').innerHTML = '<i class="fas fa-moon"></i>';
+}
+applyLogoForTheme(isLightOnLoad);
+document.getElementById('themeToggleBtn').addEventListener('click', () => {
+    const isLight = document.body.classList.toggle('light');
+    localStorage.setItem('docugoTheme', isLight ? 'light' : 'dark');
+    document.getElementById('themeToggleBtn').innerHTML = isLight ? '<i class="fas fa-sun"></i>' : '<i class="fas fa-moon"></i>';
+    applyLogoForTheme(isLight);
+});
+
+// User search functions
 function toggleUserSearch() {
     const targetUser = document.querySelector('input[name="target_type"][value="user"]');
     const userSearchBox = document.getElementById('userSearchBox');
@@ -831,7 +913,6 @@ function toggleUserSearch() {
     }
 }
 
-// User search
 const searchInput = document.getElementById('userSearchInput');
 const userResults = document.getElementById('userResults');
 let selectedUserId = null;
@@ -847,7 +928,7 @@ searchInput.addEventListener('input', function() {
         .then(r => r.json())
         .then(users => {
             if (users.length === 0) {
-                userResults.innerHTML = '<div class="user-result-item" style="color:#9ca3af;">No users found</div>';
+                userResults.innerHTML = '<div class="user-result-item" style="color:var(--text-dim);">No users found</div>';
                 userResults.style.display = 'block';
                 return;
             }
@@ -859,9 +940,7 @@ searchInput.addEventListener('input', function() {
             `).join('');
             userResults.style.display = 'block';
         })
-        .catch(err => {
-            console.error('Search error:', err);
-        });
+        .catch(err => console.error('Search error:', err));
 });
 
 function selectUser(id, name, email, role) {
@@ -873,8 +952,8 @@ function selectUser(id, name, email, role) {
     const container = document.getElementById('selectedUserContainer');
     container.innerHTML = `
         <div class="selected-user">
-            <span>👤 ${escapeHTML(name)}</span>
-            <span class="remove" onclick="clearSelectedUser()">✕</span>
+            <span><i class="fas fa-user"></i> ${escapeHTML(name)}</span>
+            <span class="remove" onclick="clearSelectedUser()"><i class="fas fa-times-circle"></i></span>
         </div>
     `;
 }
@@ -934,6 +1013,8 @@ function cancelEdit() {
     document.getElementById('announcementId').value = '';
     document.getElementById('cancelEditBtn').style.display = 'none';
     clearSelectedUser();
+    const targetAll = document.querySelector('input[name="target_type"][value="all"]');
+    if (targetAll) targetAll.checked = true;
     toggleUserSearch();
 }
 </script>

@@ -1,7 +1,8 @@
 <?php
 // ================================================================
 // signatory/dashboard.php
-// 4 SIGNATURES REQUIRED - ANY signatory can sign any slot
+// 5 SIGNATURES REQUIRED (Adviser, CompLab, Library, Dept Head, Registrar)
+// + REJECTION WITH REASON + CLEARANCE SIGNATURE GRID
 // ================================================================
 require_once '../includes/config.php';
 require_once '../includes/request_helper.php';
@@ -16,8 +17,13 @@ if (!isset($_SESSION['user_role']) || $_SESSION['user_role'] !== 'signatory') {
 $conn   = getConnection();
 $userId = $_SESSION['user_id'];
 
-// Load signatory user info
-$uStmt = $conn->prepare("SELECT u.id, u.first_name, u.last_name FROM users u WHERE u.id = ? LIMIT 1");
+// Load signatory user info (get their office/role name for rejection message)
+$uStmt = $conn->prepare("
+    SELECT u.id, u.first_name, u.last_name, u.signatory_role, so.office_name 
+    FROM users u
+    LEFT JOIN signature_offices so ON so.id = u.signature_office_id
+    WHERE u.id = ? LIMIT 1
+");
 $uStmt->bind_param("i", $userId);
 $uStmt->execute();
 $signer = $uStmt->get_result()->fetch_assoc();
@@ -30,31 +36,43 @@ if (!$signer) {
 }
 
 $signerName = $signer['first_name'] . ' ' . $signer['last_name'];
+$officeName = $signer['office_name'] ?? ($signer['signatory_role'] ?? 'Signatory Office');
 
 // ── Handle POST (sign / reject) ────────────────────────────
 $flashSuccess = $flashError = '';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action   = $_POST['action']       ?? '';
-    $sigRowId = intval($_POST['sig_id'] ?? 0);
-    $remarks  = trim($_POST['remarks']  ?? '');
-
-    if ($action === 'sign') {
-        $result = signRequestRow($conn, $sigRowId, $userId, $remarks);
-        if ($result['success']) {
-            $flashSuccess = $result['auto_approved']
-                ? '✅ All 4 signatures collected! Request has been approved and student notified.'
-                : '✅ Signature recorded. (' . $result['signed_count'] . '/4 signatures completed)';
+    
+    if ($action === 'reject_request') {
+        // REJECT ENTIRE REQUEST
+        $requestId = intval($_POST['request_id'] ?? 0);
+        $reason    = trim($_POST['reject_reason'] ?? '');
+        
+        if (empty($reason)) {
+            $flashError = 'Please provide a reason for rejection.';
         } else {
-            $flashError = $result['error'];
+            $result = rejectRequest($conn, $requestId, $userId, $reason, $officeName);
+            if ($result['success']) {
+                $flashSuccess = '✅ Request has been rejected. Student has been notified.';
+            } else {
+                $flashError = $result['error'];
+            }
         }
-    } elseif ($action === 'reject') {
-        if (empty($remarks)) {
-            $flashError = 'A reason is required to reject.';
-        } else {
-            $result = rejectSignatureRow($conn, $sigRowId, $userId, $remarks);
-            $flashSuccess = $result['success'] ? '✅ Request rejected. Student has been notified.' : '';
-            $flashError   = $result['error']   ?? '';
+    } else {
+        // SIGN a specific slot
+        $sigRowId = intval($_POST['sig_id'] ?? 0);
+        $remarks  = trim($_POST['remarks']  ?? '');
+        
+        if ($action === 'sign') {
+            $result = signRequestRow($conn, $sigRowId, $userId, $remarks);
+            if ($result['success']) {
+                $flashSuccess = $result['auto_approved']
+                    ? '✅ ALL 5 SIGNATURES COLLECTED! Request has been approved and student notified.'
+                    : '✅ Signature recorded.';
+            } else {
+                $flashError = $result['error'];
+            }
         }
     }
 }
@@ -79,6 +97,7 @@ $sql = "
         dr.copies,
         dr.requested_at,
         dr.estimated_release_date,
+        dr.remarks      AS req_remarks,
         dt.name         AS doc_type,
         dt.fee,
         (dt.fee * dr.copies) AS total_fee,
@@ -97,12 +116,12 @@ $sql = "
 if ($tab !== 'all') {
     $sql .= " WHERE " . match($tab) {
         'signed'   => "rs.status = 'signed'",
-        'rejected' => "rs.status = 'rejected'",
+        'rejected' => "dr.status = 'cancelled'",
         default    => "rs.status = 'pending' AND dr.status = 'for_signature'",
     };
 }
 
-$sql .= " ORDER BY dr.requested_at DESC";
+$sql .= " GROUP BY dr.id ORDER BY dr.requested_at DESC";
 
 $stmt = $conn->prepare($sql);
 if (!$stmt) {
@@ -112,24 +131,115 @@ $stmt->execute();
 $rows = $stmt->get_result();
 $stmt->close();
 
+// Get signature details for each request to show office-by-office status
+$signatureDetails = [];
+if ($rows->num_rows > 0) {
+    $rows->data_seek(0);
+    while ($row = $rows->fetch_assoc()) {
+        $reqId = $row['req_id'];
+        $sigStmt = $conn->prepare("
+            SELECT 
+                rs.status,
+                rs.signed_at,
+                CONCAT(u.first_name, ' ', u.last_name) as signed_by_name,
+                CASE 
+                    WHEN rs.office_id = 1 THEN 'Adviser'
+                    WHEN rs.office_id = 2 THEN 'Computer Laboratory'
+                    WHEN rs.office_id = 3 THEN 'Library'
+                    WHEN rs.office_id = 4 THEN 'Department Head'
+                    WHEN rs.office_id = 5 THEN 'Registrar'
+                    ELSE 'Unknown'
+                END as office_name
+            FROM request_signatures rs
+            LEFT JOIN users u ON rs.signed_by = u.id
+            WHERE rs.request_id = ?
+            ORDER BY rs.office_id ASC
+        ");
+        $sigStmt->bind_param("i", $reqId);
+        $sigStmt->execute();
+        $sigResult = $sigStmt->get_result();
+        $signatureDetails[$reqId] = [];
+        while ($sig = $sigResult->fetch_assoc()) {
+            $signatureDetails[$reqId][] = $sig;
+        }
+        $sigStmt->close();
+    }
+    $rows->data_seek(0);
+}
+
 $conn->close();
 
-function e($v)  { return htmlspecialchars($v ?? ''); }
-function fd($d) { return $d ? date('M d, Y', strtotime($d)) : '—'; }
-function fdt($d){ return $d ? date('M d, Y g:i A', strtotime($d)) : '—'; }
+function escape($v)  { return htmlspecialchars($v ?? ''); }
+function formatDate($d) { return $d ? date('M d, Y', strtotime($d)) : '—'; }
+function formatDateTime($d){ return $d ? date('M d, Y g:i A', strtotime($d)) : '—'; }
 ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Signature Panel — DocuGo</title>
+    <title>Signature Panel — ADFC DocuGo</title>
+    <link href="https://fonts.googleapis.com/css2?family=Sora:wght@300;400;600;700;800&family=DM+Sans:ital,wght@0,300;0,400;0,500;1,300&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
-        body { font-family: 'Segoe UI', Arial, sans-serif; background: #f0f4f8; min-height: 100vh; }
+        
+        /* ========== THEME VARIABLES - DARK MODE (DEFAULT) ========== */
+        :root {
+            --primary:    #1a3ec7;
+            --primary-dk: #1230a0;
+            --accent:     #3b6bff;
+            --accent2:    #6b9fff;
+            --bg:         #080e28;
+            --bg2:        #0b1535;
+            --surface:    rgba(255,255,255,0.05);
+            --surface-hv: rgba(255,255,255,0.08);
+            --border:     rgba(255,255,255,0.08);
+            --border-hv:  rgba(59,107,255,0.25);
+            --text:       #dce6f8;
+            --text-muted: #7a96c4;
+            --text-dim:   #4a6190;
+            --green:      #4cd98a;
+            --yellow:     #fbbf24;
+            --purple:     #a78bfa;
+            --red:        #f87171;
+            --blue:       #60a5fa;
+            --radius-sm:  8px;
+            --radius-md:  12px;
+            --radius-lg:  16px;
+            --radius-xl:  24px;
+            --ease-out:   cubic-bezier(0.16, 1, 0.3, 1);
+            --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+        }
 
+        /* ========== LIGHT MODE VARIABLES ========== */
+        body.light {
+            --bg:         #eef2ff;
+            --bg2:        #e2e9ff;
+            --surface:    rgba(255,255,255,0.7);
+            --surface-hv: rgba(255,255,255,0.9);
+            --border:     rgba(26,62,199,0.12);
+            --border-hv:  rgba(26,62,199,0.25);
+            --text:       #0c1836;
+            --text-muted: #3d5a92;
+            --text-dim:   #7a96c4;
+            --green:      #059669;
+            --yellow:     #d97706;
+            --purple:     #7c3aed;
+            --red:        #dc2626;
+            --blue:       #1a56db;
+        }
+
+        body {
+            font-family: 'DM Sans', sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            transition: background 0.3s, color 0.3s;
+        }
+
+        /* Topbar - gradient stays consistent */
         .topbar {
-            background: #1a56db;
+            background: linear-gradient(135deg, var(--primary), var(--accent));
             color: #fff;
             padding: 0.8rem 1.5rem;
             display: flex;
@@ -143,87 +253,272 @@ function fdt($d){ return $d ? date('M d, Y g:i A', strtotime($d)) : '—'; }
             flex-wrap: wrap;
         }
         .topbar-left { display: flex; align-items: center; gap: 0.75rem; }
-        .topbar-brand { font-size: 1.2rem; font-weight: 800; }
-        .topbar-office { background: rgba(255,255,255,0.18); border-radius: 20px; padding: 3px 12px; font-size: 0.8rem; font-weight: 600; }
+        .topbar-brand { 
+            font-family: 'Sora', sans-serif;
+            font-size: 1.2rem; 
+            font-weight: 800; 
+        }
+        .topbar-logo {
+            width: 32px;
+            height: 32px;
+            object-fit: contain;
+            border-radius: 8px;
+        }
+        .topbar-office { 
+            background: rgba(255,255,255,0.18); 
+            border-radius: 20px; 
+            padding: 3px 12px; 
+            font-size: 0.8rem; 
+            font-weight: 600; 
+        }
         .topbar-right { display: flex; align-items: center; gap: 0.75rem; font-size: 0.85rem; }
-        .logout-link { background: rgba(255,255,255,0.16); padding: 4px 12px; border-radius: 7px; color: #fff; text-decoration: none; font-size: 0.82rem; font-weight: 600; transition: background 0.15s; }
+        .logout-link { 
+            background: rgba(255,255,255,0.16); 
+            padding: 4px 12px; 
+            border-radius: 7px; 
+            color: #fff; 
+            text-decoration: none; 
+            font-size: 0.82rem; 
+            font-weight: 600; 
+            transition: background 0.15s; 
+        }
         .logout-link:hover { background: rgba(255,255,255,0.28); }
 
-        .main { max-width: 960px; margin: 0 auto; padding: 1.5rem 1.25rem; }
+        /* Main Content */
+        .main { max-width: 1200px; margin: 0 auto; padding: 1.5rem 1.25rem; }
         .page-title { margin-bottom: 1.25rem; }
-        .page-title h1 { font-size: 1.35rem; font-weight: 700; color: #111827; }
-        .page-title p { font-size: 0.875rem; color: #6b7280; margin-top: 3px; }
+        .page-title h1 { 
+            font-family: 'Sora', sans-serif;
+            font-size: 1.35rem; 
+            font-weight: 700; 
+            color: var(--text); 
+        }
+        .page-title p { font-size: 0.875rem; color: var(--text-muted); margin-top: 3px; }
 
+        /* Stats */
         .stats { display: grid; grid-template-columns: repeat(3,1fr); gap: 0.75rem; margin-bottom: 1.25rem; }
-        .stat-card { background: #fff; border-radius: 10px; padding: 1rem; box-shadow: 0 1px 6px rgba(0,0,0,0.08); text-align: center; }
-        .stat-card.urgent { background: #fffbeb; border: 1.5px solid #fde68a; }
-        .stat-n { font-size: 1.9rem; font-weight: 800; color: #111827; }
-        .stat-l { font-size: 0.78rem; color: #6b7280; margin-top: 2px; }
+        .stat-card { 
+            background: var(--surface); 
+            border-radius: var(--radius-lg); 
+            padding: 1rem; 
+            box-shadow: 0 1px 6px rgba(0,0,0,0.08); 
+            text-align: center;
+            border: 1px solid var(--border);
+        }
+        .stat-card.urgent { background: rgba(251,191,36,0.1); border: 1.5px solid var(--yellow); }
+        .stat-n { 
+            font-family: 'Sora', sans-serif;
+            font-size: 1.9rem; 
+            font-weight: 800; 
+            color: var(--text); 
+        }
+        .stat-l { font-size: 0.78rem; color: var(--text-muted); margin-top: 2px; }
 
-        .alert { padding: 0.85rem 1rem; border-radius: 8px; margin-bottom: 1rem; font-size: 0.875rem; }
-        .alert-success { background: #f0fdf4; border: 1px solid #bbf7d0; color: #15803d; }
-        .alert-error { background: #fef2f2; border: 1px solid #fecaca; color: #b91c1c; }
+        /* Alerts */
+        .alert { padding: 0.85rem 1rem; border-radius: var(--radius-md); margin-bottom: 1rem; font-size: 0.875rem; }
+        .alert-success { background: rgba(76,217,138,0.15); border: 1px solid rgba(76,217,138,0.3); color: var(--green); }
+        body.light .alert-success { background: #d1fae5; border-color: #a7f3d0; color: #065f46; }
+        .alert-error { background: rgba(248,113,113,0.15); border: 1px solid rgba(248,113,113,0.3); color: var(--red); }
+        body.light .alert-error { background: #fee2e2; border-color: #fecaca; color: #991b1b; }
 
-        .tabs { display: flex; gap: 0.25rem; background: #fff; padding: 0.35rem; border-radius: 10px; box-shadow: 0 1px 6px rgba(0,0,0,0.08); margin-bottom: 1rem; }
-        .tab { padding: 0.4rem 0.85rem; border-radius: 7px; text-decoration: none; font-size: 0.8rem; font-weight: 500; color: #6b7280; transition: all 0.15s; }
-        .tab:hover { background: #f3f4f6; color: #111827; }
-        .tab.active { background: #1a56db; color: #fff; font-weight: 600; }
+        /* Tabs */
+        .tabs { 
+            display: flex; 
+            gap: 0.25rem; 
+            background: var(--surface); 
+            padding: 0.35rem; 
+            border-radius: var(--radius-lg); 
+            box-shadow: 0 1px 6px rgba(0,0,0,0.08); 
+            margin-bottom: 1rem; 
+            flex-wrap: wrap;
+            border: 1px solid var(--border);
+        }
+        .tab { 
+            padding: 0.4rem 0.85rem; 
+            border-radius: var(--radius-sm); 
+            text-decoration: none; 
+            font-size: 0.8rem; 
+            font-weight: 500; 
+            color: var(--text-muted); 
+            transition: all 0.15s; 
+        }
+        .tab:hover { background: var(--bg2); color: var(--text); }
+        .tab.active { background: linear-gradient(135deg, var(--primary), var(--accent)); color: #fff; font-weight: 600; }
         .tab .cnt { background: rgba(0,0,0,0.1); border-radius: 10px; padding: 1px 6px; font-size: 0.7rem; margin-left: 3px; }
         .tab.active .cnt { background: rgba(255,255,255,0.25); }
 
-        .req-card { background: #fff; border-radius: 10px; box-shadow: 0 1px 6px rgba(0,0,0,0.08); margin-bottom: 1rem; overflow: hidden; border-left: 4px solid #fbbf24; }
-        .req-card.signed { border-left-color: #10b981; }
-        .req-card.rejected { border-left-color: #ef4444; opacity: 0.82; }
+        /* Clearance Card */
+        .clearance-card {
+            background: var(--surface);
+            border-radius: var(--radius-lg);
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+            margin-bottom: 1.5rem;
+            overflow: hidden;
+            border: 1px solid var(--border);
+        }
+        .clearance-card.rejected { background: rgba(248,113,113,0.05); border-left: 4px solid var(--red); }
+        .clearance-card.approved { background: rgba(76,217,138,0.05); border-left: 4px solid var(--green); }
+        body.light .clearance-card.rejected { background: #fef2f2; }
+        body.light .clearance-card.approved { background: #f0fdf4; }
 
-        .card-head { padding: 1rem 1.1rem 0.75rem; display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
-        .card-code { font-family: monospace; font-size: 0.78rem; color: #6b7280; margin-bottom: 3px; }
-        .card-doc { font-size: 1rem; font-weight: 700; color: #111827; }
-        .card-meta { font-size: 0.78rem; color: #9ca3af; margin-top: 3px; line-height: 1.6; }
-        .card-right { text-align: right; flex-shrink: 0; }
-        .card-fee { font-size: 1rem; font-weight: 800; color: #059669; }
-        .card-date { font-size: 0.75rem; color: #9ca3af; margin-top: 2px; }
+        /* Card Header */
+        .card-header {
+            background: linear-gradient(135deg, var(--primary), var(--accent));
+            color: white;
+            padding: 16px 20px;
+        }
+        .request-code { font-family: monospace; font-size: 0.7rem; opacity: 0.8; margin-bottom: 4px; }
+        .student-name { font-size: 1rem; font-weight: 700; }
+        .student-details { font-size: 0.7rem; opacity: 0.8; margin-top: 4px; }
 
-        .sig-progress { padding: 0.6rem 1.1rem; border-top: 1px solid #f3f4f6; background: #fafafa; }
-        .sig-progress-top { display: flex; justify-content: space-between; font-size: 0.75rem; color: #6b7280; margin-bottom: 5px; }
-        .progress-track { height: 6px; background: #e5e7eb; border-radius: 4px; overflow: hidden; }
-        .progress-fill { height: 100%; border-radius: 4px; background: #1a56db; transition: width 0.4s; }
+        /* Card Body */
+        .card-body { padding: 16px 20px; }
+        .document-info {
+            background: var(--bg2);
+            padding: 10px 14px;
+            border-radius: var(--radius-md);
+            margin-bottom: 16px;
+        }
+        .doc-name { font-weight: 700; color: var(--primary); margin-bottom: 4px; font-size: 0.85rem; }
+        .purpose { font-size: 0.75rem; color: var(--text-muted); }
 
-        .signatures-row { padding: 0.65rem 1.1rem; border-top: 1px solid #f3f4f6; display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; }
-        .sig-chip { display: inline-flex; align-items: center; gap: 4px; padding: 3px 10px; border-radius: 20px; font-size: 0.72rem; font-weight: 600; border: 1px solid transparent; }
-        .sig-pending { background: #fef3c7; color: #92400e; border-color: #fde68a; }
-        .sig-signed { background: #d1fae5; color: #065f46; border-color: #6ee7b7; }
-        .sig-rejected { background: #fee2e2; color: #991b1b; border-color: #fca5a5; }
+        /* Signature Grid */
+        .signature-grid {
+            display: grid;
+            grid-template-columns: repeat(5, 1fr);
+            gap: 10px;
+            margin-bottom: 16px;
+        }
+        .signature-item {
+            background: var(--bg2);
+            border-radius: var(--radius-md);
+            padding: 10px 6px;
+            text-align: center;
+            transition: all 0.2s;
+            position: relative;
+            border: 1px solid var(--border);
+        }
+        .signature-item.signed {
+            background: rgba(76,217,138,0.15);
+            border: 1px solid var(--green);
+        }
+        .signature-item.pending {
+            background: rgba(251,191,36,0.08);
+            border: 1px dashed var(--yellow);
+        }
+        body.light .signature-item.signed { background: #d1fae5; }
+        body.light .signature-item.pending { background: #fef3c7; }
+        .signature-icon { font-size: 1.3rem; margin-bottom: 4px; }
+        .signature-name { font-weight: 700; font-size: 0.7rem; margin-bottom: 3px; color: var(--text); }
+        .signature-status { font-size: 0.6rem; }
+        .signature-item.signed .signature-status { color: var(--green); font-weight: 600; }
+        .signature-item.pending .signature-status { color: var(--yellow); }
+        .signature-signer { font-size: 0.55rem; color: var(--green); margin-top: 3px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .checkmark {
+            position: absolute;
+            top: -6px;
+            right: -6px;
+            background: var(--green);
+            color: white;
+            width: 18px;
+            height: 18px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.6rem;
+        }
 
-        .card-action { padding: 0.9rem 1.1rem; border-top: 1px solid #f3f4f6; }
-        .action-inner { display: flex; gap: 0.75rem; align-items: flex-start; flex-wrap: wrap; }
-        .action-form { flex: 1; min-width: 200px; }
-        .remarks-input { width: 100%; padding: 0.55rem 0.8rem; border: 1.5px solid #d1d5db; border-radius: 8px; font-family: inherit; font-size: 0.82rem; resize: vertical; min-height: 56px; outline: none; margin-bottom: 0.5rem; }
-        .remarks-input:focus { border-color: #1a56db; box-shadow: 0 0 0 3px rgba(26,86,219,0.08); }
-        .btn-row { display: flex; gap: 0.5rem; }
-        .btn-sign { flex: 1; padding: 0.62rem 1rem; background: #1a56db; color: #fff; border: none; border-radius: 8px; font-family: inherit; font-size: 0.875rem; font-weight: 700; cursor: pointer; }
-        .btn-sign:hover { background: #1447c0; }
-        .btn-reject { padding: 0.62rem 0.9rem; background: #fee2e2; color: #991b1b; border: 1.5px solid #fca5a5; border-radius: 8px; font-family: inherit; font-size: 0.875rem; font-weight: 600; cursor: pointer; }
-        .btn-reject:hover { opacity: 0.8; }
+        /* Progress Bar */
+        .progress-section { margin: 12px 0; }
+        .progress-label { display: flex; justify-content: space-between; font-size: 0.7rem; color: var(--text-muted); margin-bottom: 5px; }
+        .progress-bar { height: 6px; background: var(--border); border-radius: 10px; overflow: hidden; }
+        .progress-fill { height: 100%; background: linear-gradient(90deg, var(--primary), var(--accent)); border-radius: 10px; transition: width 0.3s ease; }
 
-        .state-banner { padding: 0.7rem 1.1rem; border-top: 1px solid #f3f4f6; font-size: 0.85rem; }
-        .state-signed { background: #f0fdf4; color: #065f46; }
-        .state-rejected { background: #fef2f2; color: #991b1b; }
+        /* Action Area */
+        .card-action { padding: 14px 20px; border-top: 1px solid var(--border); background: var(--bg2); }
+        .action-inner { display: flex; gap: 15px; align-items: flex-start; flex-wrap: wrap; }
+        .sign-form { flex: 2; min-width: 200px; }
+        .reject-form { flex: 1; min-width: 180px; padding-left: 15px; border-left: 1px dashed var(--border); }
+        .remarks-input, .reject-reason-input {
+            width: 100%;
+            padding: 8px 12px;
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            font-family: inherit;
+            font-size: 0.75rem;
+            resize: vertical;
+            margin-bottom: 8px;
+            background: var(--surface);
+            color: var(--text);
+            transition: border-color 0.2s;
+        }
+        .remarks-input:focus, .reject-reason-input:focus { outline: none; border-color: var(--accent); }
+        .btn-sign, .btn-reject {
+            width: 100%;
+            padding: 8px 12px;
+            border-radius: var(--radius-sm);
+            font-weight: 700;
+            font-size: 0.8rem;
+            cursor: pointer;
+            transition: all 0.2s;
+            border: none;
+        }
+        .btn-sign { background: linear-gradient(135deg, var(--primary), var(--accent)); color: white; }
+        .btn-sign:hover { transform: translateY(-1px); opacity: 0.92; }
+        .btn-reject { background: rgba(248,113,113,0.15); color: var(--red); border: 1px solid rgba(248,113,113,0.3); }
+        .btn-reject:hover { background: rgba(248,113,113,0.25); }
+        body.light .btn-reject { background: #fee2e2; color: #991b1b; border-color: #fecaca; }
+        body.light .btn-reject:hover { background: #fecaca; }
+        .rejection-label { font-size: 0.65rem; font-weight: 600; color: var(--red); margin-bottom: 5px; display: block; }
 
-        .badge { padding: 2px 8px; border-radius: 10px; font-size: 0.7rem; font-weight: 700; display: inline-block; }
-        .badge-pending { background: #fef3c7; color: #92400e; }
-        .badge-signed { background: #d1fae5; color: #065f46; }
-        .badge-rejected { background: #fee2e2; color: #991b1b; }
+        .state-banner { padding: 10px 16px; border-top: 1px solid var(--border); font-size: 0.8rem; text-align: center; }
+        .state-approved { background: rgba(76,217,138,0.1); color: var(--green); }
+        .state-rejected { background: rgba(248,113,113,0.1); color: var(--red); }
+        body.light .state-approved { background: #f0fdf4; color: #065f46; }
+        body.light .state-rejected { background: #fef2f2; color: #991b1b; }
 
-        .empty { text-align: center; padding: 3rem 1rem; background: #fff; border-radius: 10px; }
+        .badge { padding: 2px 8px; border-radius: 10px; font-size: 0.65rem; font-weight: 700; display: inline-block; }
+        .badge-pending { background: rgba(251,191,36,0.15); color: var(--yellow); }
+        .badge-approved { background: rgba(76,217,138,0.15); color: var(--green); }
+        .badge-rejected { background: rgba(248,113,113,0.15); color: var(--red); }
+
+        .empty { text-align: center; padding: 3rem 1rem; background: var(--surface); border-radius: var(--radius-lg); border: 1px solid var(--border); }
         .empty-icon { font-size: 2.5rem; margin-bottom: 0.75rem; }
-        .empty h3 { font-size: 1rem; color: #374151; margin-bottom: 0.3rem; }
-        .empty p { font-size: 0.875rem; color: #9ca3af; }
+        .empty h3 { font-family: 'Sora', sans-serif; font-size: 1rem; color: var(--text); margin-bottom: 0.3rem; }
+        .empty p { font-size: 0.875rem; color: var(--text-muted); }
 
-        @media (max-width: 600px) {
-            .stats { grid-template-columns: 1fr 1fr; }
-            .card-head { flex-direction: column; gap: 0.5rem; }
-            .card-right { text-align: left; }
-            .btn-row { flex-direction: column; }
+        /* Theme Toggle */
+        .theme-toggle {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            width: 42px;
+            height: 42px;
+            border-radius: 50%;
+            background: var(--surface);
+            backdrop-filter: blur(12px);
+            border: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            color: var(--text);
+            font-size: 1.1rem;
+            z-index: 99;
+            transition: transform 0.2s;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+        .theme-toggle:hover { transform: scale(1.1); background: var(--surface-hv); }
+
+        @media (max-width: 900px) {
+            .signature-grid { grid-template-columns: repeat(2, 1fr); }
+            .action-inner { flex-direction: column; }
+            .reject-form { border-left: none; padding-left: 0; margin-top: 10px; }
+        }
+        @media (max-width: 500px) {
+            .signature-grid { grid-template-columns: 1fr; }
+            .stats { grid-template-columns: 1fr; }
         }
     </style>
 </head>
@@ -231,35 +526,36 @@ function fdt($d){ return $d ? date('M d, Y g:i A', strtotime($d)) : '—'; }
 
 <div class="topbar">
     <div class="topbar-left">
-        <span class="topbar-brand">DocuGo</span>
-        <span class="topbar-office">✍️ Signature Panel</span>
+        <img id="topbarLogo" src="../wlogo.png" alt="ADFC Logo" style="width: 32px; height: 32px; object-fit: contain; border-radius: 8px;">
+        <span class="topbar-brand">ADFC DocuGo</span>
+        <span class="topbar-office">✍️ <?= escape($officeName) ?></span>
     </div>
     <div class="topbar-right">
-        <span class="topbar-user">👤 <?= e($signerName) ?></span>
-        <a href="../logout.php" class="logout-link">Logout</a>
+        <span class="topbar-user"><i class="fas fa-user-circle"></i> <?= escape($signerName) ?></span>
+        <a href="../logout.php" class="logout-link"><i class="fas fa-sign-out-alt"></i> Logout</a>
     </div>
 </div>
 
 <div class="main">
     <div class="page-title">
-        <h1>Signature Panel</h1>
-        <p><strong>4 signatures required</strong> — Any authorized signatory can sign any available slot. Once all 4 slots are signed, the request is automatically approved.</p>
+        <h1><i class="fas fa-clipboard-list"></i> Clearance Signature Panel</h1>
+        <p><strong>5 signatures required</strong> — Adviser, Computer Laboratory, Library, Department Head, Registrar. Once all 5 offices sign, the request is automatically approved.</p>
     </div>
 
     <div class="stats">
         <div class="stat-card urgent"><div class="stat-n"><?= $stats['pending'] ?? 0 ?></div><div class="stat-l">Pending Signatures</div></div>
-        <div class="stat-card"><div class="stat-n"><?= $stats['signed'] ?? 0 ?></div><div class="stat-l">Completed Signatures</div></div>
+        <div class="stat-card"><div class="stat-n"><?= $stats['signed'] ?? 0 ?></div><div class="stat-l">Completed Requests</div></div>
         <div class="stat-card"><div class="stat-n"><?= ($stats['pending'] ?? 0) + ($stats['signed'] ?? 0) + ($stats['rejected'] ?? 0) ?></div><div class="stat-l">Total Requests</div></div>
     </div>
 
-    <?php if ($flashSuccess): ?><div class="alert alert-success"><?= e($flashSuccess) ?></div><?php endif; ?>
-    <?php if ($flashError): ?><div class="alert alert-error"><?= e($flashError) ?></div><?php endif; ?>
+    <?php if ($flashSuccess): ?><div class="alert alert-success"><i class="fas fa-check-circle"></i> <?= escape($flashSuccess) ?></div><?php endif; ?>
+    <?php if ($flashError): ?><div class="alert alert-error"><i class="fas fa-exclamation-triangle"></i> <?= escape($flashError) ?></div><?php endif; ?>
 
     <div class="tabs">
-        <a href="?tab=pending" class="tab <?= $tab==='pending'?'active':'' ?>">⏳ Needs Signature <span class="cnt"><?= $stats['pending'] ?? 0 ?></span></a>
-        <a href="?tab=signed" class="tab <?= $tab==='signed'?'active':'' ?>">✅ Signed <span class="cnt"><?= $stats['signed'] ?? 0 ?></span></a>
-        <a href="?tab=rejected" class="tab <?= $tab==='rejected'?'active':'' ?>">✕ Rejected <span class="cnt"><?= $stats['rejected'] ?? 0 ?></span></a>
-        <a href="?tab=all" class="tab <?= $tab==='all'?'active':'' ?>">📋 All</a>
+        <a href="?tab=pending" class="tab <?= $tab==='pending'?'active':'' ?>"><i class="fas fa-clock"></i> Needs Signature <span class="cnt"><?= $stats['pending'] ?? 0 ?></span></a>
+        <a href="?tab=signed" class="tab <?= $tab==='signed'?'active':'' ?>"><i class="fas fa-check-circle"></i> Approved <span class="cnt"><?= $stats['signed'] ?? 0 ?></span></a>
+        <a href="?tab=rejected" class="tab <?= $tab==='rejected'?'active':'' ?>"><i class="fas fa-times-circle"></i> Rejected <span class="cnt"><?= $stats['rejected'] ?? 0 ?></span></a>
+        <a href="?tab=all" class="tab <?= $tab==='all'?'active':'' ?>"><i class="fas fa-list"></i> All Requests</a>
     </div>
 
     <?php if ($rows->num_rows === 0): ?>
@@ -268,79 +564,195 @@ function fdt($d){ return $d ? date('M d, Y g:i A', strtotime($d)) : '—'; }
 
     <?php while ($r = $rows->fetch_assoc()):
         $sigPct = $r['total_count'] > 0 ? round(($r['signed_count'] / $r['total_count']) * 100) : 0;
-        $cls = match($r['sig_status']) { 'signed' => 'signed', 'rejected' => 'rejected', default => '' };
+        $isRejected = ($r['req_status'] === 'cancelled');
+        $isApproved = ($r['req_status'] === 'approved');
+        $isPending = (!$isRejected && !$isApproved && $r['req_status'] === 'for_signature');
+        
+        // Get signature details for this request
+        $sigs = $signatureDetails[$r['req_id']] ?? [];
+        $sigMap = [];
+        foreach ($sigs as $sig) {
+            $sigMap[$sig['office_name']] = $sig;
+        }
+        
+        // Check if current signatory already signed
+        $alreadySigned = false;
+        foreach ($sigs as $sig) {
+            if ($sig['signed_by_name'] == $signerName) {
+                $alreadySigned = true;
+                break;
+            }
+        }
     ?>
-    <div class="req-card <?= $cls ?>">
-        <div class="card-head">
-            <div>
-                <div class="card-code"><?= e($r['request_code']) ?></div>
-                <div class="card-doc"><?= e($r['doc_type']) ?></div>
-                <div class="card-meta">
-                    <strong><?= e($r['student_name']) ?></strong>
-                    <?php if ($r['student_id']): ?> · ID: <?= e($r['student_id']) ?><?php endif; ?>
-                    <?php if ($r['course']): ?> · <?= e($r['course']) ?><?php endif; ?>
-                    <br><?= $r['copies'] ?> copy(ies) · Submitted: <?= fd($r['requested_at']) ?>
-                    <?php if ($r['estimated_release_date']): ?> · Est. release: <strong><?= fd($r['estimated_release_date']) ?></strong><?php endif; ?>
+    <div class="clearance-card <?= $isRejected ? 'rejected' : ($isApproved ? 'approved' : '') ?>">
+        <div class="card-header">
+            <div class="request-code"><i class="fas fa-file-alt"></i> <?= escape($r['request_code']) ?></div>
+            <div class="student-name"><i class="fas fa-user-graduate"></i> <?= escape($r['student_name']) ?></div>
+            <div class="student-details">ID: <?= escape($r['student_id'] ?? 'N/A') ?> · Course: <?= escape($r['course'] ?? 'N/A') ?></div>
+        </div>
+
+        <div class="card-body">
+            <div class="document-info">
+                <div class="doc-name"><i class="fas fa-file-pdf"></i> <?= escape($r['doc_type']) ?></div>
+                <div class="purpose">Purpose: <?= escape($r['purpose']) ?></div>
+                <div class="purpose"><i class="fas fa-calendar"></i> Requested: <?= formatDate($r['requested_at']) ?> · Copies: <?= $r['copies'] ?></div>
+                <?php if ($isRejected && $r['req_remarks']): ?>
+                    <div class="purpose" style="color:var(--red); margin-top:6px;"><i class="fas fa-ban"></i> Rejection: <?= escape($r['req_remarks']) ?></div>
+                <?php endif; ?>
+            </div>
+
+            <!-- 5 OFFICES SIGNATURE GRID -->
+            <div class="signature-grid">
+                <!-- ADVISER -->
+                <div class="signature-item <?= isset($sigMap['Adviser']) && $sigMap['Adviser']['status'] === 'signed' ? 'signed' : 'pending' ?>">
+                    <div class="signature-icon">👨‍🏫</div>
+                    <div class="signature-name">ADVISER</div>
+                    <?php if (isset($sigMap['Adviser']) && $sigMap['Adviser']['status'] === 'signed'): ?>
+                        <div class="signature-status"><i class="fas fa-check-circle"></i> Signed</div>
+                        <div class="signature-signer" title="<?= escape($sigMap['Adviser']['signed_by_name'] ?? 'Unknown') ?>">by: <?= escape(substr($sigMap['Adviser']['signed_by_name'] ?? 'Unknown', 0, 15)) ?></div>
+                        <div class="checkmark">✓</div>
+                    <?php else: ?>
+                        <div class="signature-status"><i class="fas fa-hourglass-half"></i> Pending</div>
+                    <?php endif; ?>
                 </div>
-                <?php if ($r['purpose']): ?><div class="card-meta" style="margin-top:4px">Purpose: <?= e($r['purpose']) ?></div><?php endif; ?>
+
+                <!-- COMPUTER LABORATORY -->
+                <div class="signature-item <?= isset($sigMap['Computer Laboratory']) && $sigMap['Computer Laboratory']['status'] === 'signed' ? 'signed' : 'pending' ?>">
+                    <div class="signature-icon">💻</div>
+                    <div class="signature-name">COMPUTER LAB</div>
+                    <?php if (isset($sigMap['Computer Laboratory']) && $sigMap['Computer Laboratory']['status'] === 'signed'): ?>
+                        <div class="signature-status"><i class="fas fa-check-circle"></i> Signed</div>
+                        <div class="signature-signer" title="<?= escape($sigMap['Computer Laboratory']['signed_by_name'] ?? 'Unknown') ?>">by: <?= escape(substr($sigMap['Computer Laboratory']['signed_by_name'] ?? 'Unknown', 0, 15)) ?></div>
+                        <div class="checkmark">✓</div>
+                    <?php else: ?>
+                        <div class="signature-status"><i class="fas fa-hourglass-half"></i> Pending</div>
+                    <?php endif; ?>
+                </div>
+
+                <!-- LIBRARY -->
+                <div class="signature-item <?= isset($sigMap['Library']) && $sigMap['Library']['status'] === 'signed' ? 'signed' : 'pending' ?>">
+                    <div class="signature-icon">📚</div>
+                    <div class="signature-name">LIBRARY</div>
+                    <?php if (isset($sigMap['Library']) && $sigMap['Library']['status'] === 'signed'): ?>
+                        <div class="signature-status"><i class="fas fa-check-circle"></i> Signed</div>
+                        <div class="signature-signer" title="<?= escape($sigMap['Library']['signed_by_name'] ?? 'Unknown') ?>">by: <?= escape(substr($sigMap['Library']['signed_by_name'] ?? 'Unknown', 0, 15)) ?></div>
+                        <div class="checkmark">✓</div>
+                    <?php else: ?>
+                        <div class="signature-status"><i class="fas fa-hourglass-half"></i> Pending</div>
+                    <?php endif; ?>
+                </div>
+
+                <!-- DEPARTMENT HEAD -->
+                <div class="signature-item <?= isset($sigMap['Department Head']) && $sigMap['Department Head']['status'] === 'signed' ? 'signed' : 'pending' ?>">
+                    <div class="signature-icon">📋</div>
+                    <div class="signature-name">DEPARTMENT HEAD</div>
+                    <?php if (isset($sigMap['Department Head']) && $sigMap['Department Head']['status'] === 'signed'): ?>
+                        <div class="signature-status"><i class="fas fa-check-circle"></i> Signed</div>
+                        <div class="signature-signer" title="<?= escape($sigMap['Department Head']['signed_by_name'] ?? 'Unknown') ?>">by: <?= escape(substr($sigMap['Department Head']['signed_by_name'] ?? 'Unknown', 0, 15)) ?></div>
+                        <div class="checkmark">✓</div>
+                    <?php else: ?>
+                        <div class="signature-status"><i class="fas fa-hourglass-half"></i> Pending</div>
+                    <?php endif; ?>
+                </div>
+
+                <!-- REGISTRAR -->
+                <div class="signature-item <?= isset($sigMap['Registrar']) && $sigMap['Registrar']['status'] === 'signed' ? 'signed' : 'pending' ?>">
+                    <div class="signature-icon">🏛️</div>
+                    <div class="signature-name">REGISTRAR</div>
+                    <?php if (isset($sigMap['Registrar']) && $sigMap['Registrar']['status'] === 'signed'): ?>
+                        <div class="signature-status"><i class="fas fa-check-circle"></i> Signed</div>
+                        <div class="signature-signer" title="<?= escape($sigMap['Registrar']['signed_by_name'] ?? 'Unknown') ?>">by: <?= escape(substr($sigMap['Registrar']['signed_by_name'] ?? 'Unknown', 0, 15)) ?></div>
+                        <div class="checkmark">✓</div>
+                    <?php else: ?>
+                        <div class="signature-status"><i class="fas fa-hourglass-half"></i> Pending</div>
+                    <?php endif; ?>
+                </div>
             </div>
-            <div class="card-right">
-                <div class="card-fee">₱<?= number_format($r['total_fee'],2) ?></div>
-                <div style="margin-top:5px"><?= match($r['sig_status']) { 'signed' => "<span class='badge badge-signed'>✓ Signed</span>", 'rejected' => "<span class='badge badge-rejected'>✕ Rejected</span>", default => "<span class='badge badge-pending'>⏳ Needs Signature</span>", } ?></div>
+
+            <!-- Progress Bar -->
+            <div class="progress-section">
+                <div class="progress-label">
+                    <span><i class="fas fa-chart-line"></i> Overall Progress</span>
+                    <span><?= $r['signed_count'] ?> / <?= $r['total_count'] ?: 5 ?> offices signed</span>
+                </div>
+                <div class="progress-bar">
+                    <div class="progress-fill" style="width: <?= $sigPct ?>%"></div>
+                </div>
             </div>
         </div>
 
-        <div class="sig-progress">
-            <div class="sig-progress-top"><span>Signature Progress: <?= $r['signed_count'] ?> / <?= $r['total_count'] ?> completed</span><span><?= $sigPct ?>%</span></div>
-            <div class="progress-track"><div class="progress-fill" style="width:<?= $sigPct ?>%"></div></div>
-        </div>
-
-        <?php
-        $tmpConn = getConnection();
-        $allSigs = getSignatureRows($tmpConn, (int)$r['req_id']);
-        $tmpConn->close();
-        ?>
-        <div class="signatures-row">
-            <?php foreach ($allSigs as $idx => $s): 
-                $sigClass = match($s['status']) { 'signed' => 'sig-signed', 'rejected' => 'sig-rejected', default => 'sig-pending' };
-                $sigIcon = match($s['status']) { 'signed' => '✓', 'rejected' => '✕', default => '⏳' };
-            ?>
-            <span class="sig-chip <?= $sigClass ?>" title="<?= $s['signed_by_name'] ? 'Signed by: ' . $s['signed_by_name'] : 'Pending signature' ?>">
-                <?= $sigIcon ?> Slot <?= $idx + 1 ?> <?= $s['signed_by_name'] ? '· ' . $s['signed_by_name'] : '' ?>
-            </span>
-            <?php endforeach; ?>
-        </div>
-
-        <?php if ($r['sig_status'] === 'pending' && $r['req_status'] === 'for_signature' && $r['signed_count'] < $r['total_count']): ?>
+        <!-- SIGN / REJECT ACTIONS -->
+        <?php if ($isPending && $r['signed_count'] < ($r['total_count'] ?: 5)): ?>
         <div class="card-action">
-            <form method="POST" action="dashboard.php?tab=<?= e($tab) ?>">
-                <input type="hidden" name="sig_id" value="<?= $r['sig_id'] ?>">
-                <div class="action-inner">
-                    <div class="action-form">
-                        <textarea name="remarks" class="remarks-input" placeholder="Optional remarks (e.g. 'Verified', 'Approved')"></textarea>
-                        <div class="btn-row">
-                            <button type="submit" name="action" value="sign" class="btn-sign">✍️ Sign this Request</button>
-                            <button type="submit" name="action" value="reject" class="btn-reject" onclick="return confirmReject(this.form)">✕ Reject</button>
-                        </div>
-                    </div>
+            <div class="action-inner">
+                <div class="sign-form">
+                    <form method="POST" action="dashboard.php?tab=<?= escape($tab) ?>">
+                        <input type="hidden" name="sig_id" value="<?= $r['sig_id'] ?>">
+                        <textarea name="remarks" class="remarks-input" placeholder="Optional remarks (e.g. 'Cleared', 'Verified', 'No pending obligations')"></textarea>
+                        <button type="submit" name="action" value="sign" class="btn-sign"><i class="fas fa-signature"></i> SIGN CLEARANCE — <?= escape($officeName) ?></button>
+                    </form>
                 </div>
-            </form>
+                
+                <div class="reject-form">
+                    <div class="rejection-label"><i class="fas fa-ban"></i> Reject entire request:</div>
+                    <form method="POST" action="dashboard.php?tab=<?= escape($tab) ?>" onsubmit="return confirmReject()">
+                        <input type="hidden" name="request_id" value="<?= $r['req_id'] ?>">
+                        <textarea name="reject_reason" class="reject-reason-input" placeholder="Required: Reason for rejection (e.g. 'Student has unreturned books')" required></textarea>
+                        <button type="submit" name="action" value="reject_request" class="btn-reject"><i class="fas fa-times-circle"></i> Reject Request</button>
+                    </form>
+                </div>
+            </div>
         </div>
-        <?php elseif ($r['sig_status'] === 'signed'): ?>
-        <div class="state-banner state-signed">✅ You signed this on <?= fdt($r['signed_at']) ?><?= $r['sig_remarks'] ? ' · "' . e($r['sig_remarks']) . '"' : '' ?></div>
-        <?php elseif ($r['sig_status'] === 'rejected'): ?>
-        <div class="state-banner state-rejected">✕ You rejected this on <?= fdt($r['signed_at']) ?><?= $r['sig_remarks'] ? ' · "' . e($r['sig_remarks']) . '"' : '' ?></div>
+        <?php elseif ($isRejected): ?>
+        <div class="state-banner state-rejected"><i class="fas fa-ban"></i> This request has been REJECTED.</div>
+        <?php elseif ($isApproved): ?>
+        <div class="state-banner state-approved"><i class="fas fa-check-circle"></i> ALL 5 SIGNATURES COMPLETE — Request has been APPROVED and is being processed.</div>
         <?php endif; ?>
     </div>
     <?php endwhile; ?>
     <?php endif; ?>
 </div>
 
+<!-- Theme Toggle Button -->
+<div class="theme-toggle" id="themeToggleBtn">
+    <i class="fas fa-moon"></i>
+</div>
+
 <script>
-function confirmReject(form) {
-    const remarks = form.querySelector('textarea[name="remarks"]').value.trim();
-    if (!remarks) { alert('Please enter a reason for rejection.'); return false; }
-    return confirm('Reject this request? The student will be notified.');
+// ========== DARK/LIGHT MODE TOGGLE + LOGO SWAP ==========
+const applyLogoForTheme = (isLight) => {
+    const logoImg = document.getElementById('topbarLogo');
+    if (logoImg) logoImg.src = isLight ? '../logo.png' : '../wlogo.png';
+};
+
+// Load saved theme preference
+const savedTheme = localStorage.getItem('docugoTheme');
+const isLightOnLoad = savedTheme === 'light';
+
+if (isLightOnLoad) {
+    document.body.classList.add('light');
+    document.getElementById('themeToggleBtn').innerHTML = '<i class="fas fa-sun"></i>';
+} else {
+    document.body.classList.remove('light');
+    document.getElementById('themeToggleBtn').innerHTML = '<i class="fas fa-moon"></i>';
+}
+applyLogoForTheme(isLightOnLoad);
+
+// Theme toggle on click
+document.getElementById('themeToggleBtn').addEventListener('click', () => {
+    const isLight = document.body.classList.toggle('light');
+    localStorage.setItem('docugoTheme', isLight ? 'light' : 'dark');
+    document.getElementById('themeToggleBtn').innerHTML = isLight ? '<i class="fas fa-sun"></i>' : '<i class="fas fa-moon"></i>';
+    applyLogoForTheme(isLight);
+});
+
+function confirmReject() {
+    const reason = document.querySelector('textarea[name="reject_reason"]').value.trim();
+    if (!reason) {
+        alert('Please enter a reason for rejection.');
+        return false;
+    }
+    return confirm('Are you sure you want to REJECT this request?\n\nThe student will be notified immediately with your reason.');
 }
 </script>
 </body>

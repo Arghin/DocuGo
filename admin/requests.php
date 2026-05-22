@@ -21,7 +21,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $msgType = 'error';
 
     if ($requestId > 0) {
-        // For approve action, check if document requires signature
         if ($action === 'approve') {
             $checkStmt = $conn->prepare("
                 SELECT dt.requires_signature 
@@ -101,7 +100,6 @@ $params[] = $perPage;
 $params[] = $offset;
 $types   .= 'ii';
 
-// FIX #4: Use subquery JOIN to prevent duplicate rows when multiple payment records exist
 $sql  = "
     SELECT dr.*, 
            u.first_name, u.last_name, u.email, u.student_id,
@@ -146,293 +144,352 @@ $pendingAccs   = $conn->query("SELECT COUNT(*) as c FROM users WHERE status = 'p
 
 $conn->close();
 
-function e($v) { return htmlspecialchars($v ?? ''); }
-function fd($d) { return $d ? date('M d, Y', strtotime($d)) : '—'; }
-
-function ago($datetime) {
-    if (!$datetime) return '—';
-    $diff = time() - strtotime($datetime);
-    if ($diff < 60) return 'just now';
-    if ($diff < 3600) return floor($diff/60) . 'm ago';
-    if ($diff < 86400) return floor($diff/3600) . 'h ago';
-    return floor($diff/86400) . 'd ago';
+// Helper functions - ONLY declare if they don't exist in request_helper.php
+if (!function_exists('escape')) {
+    function escape($v) { return htmlspecialchars($v ?? ''); }
 }
+if (!function_exists('formatDate')) {
+    function formatDate($d) { return $d ? date('M d, Y', strtotime($d)) : '—'; }
+}
+if (!function_exists('timeAgo')) {
+    function timeAgo($datetime) {
+        if (!$datetime) return '—';
+        $diff = time() - strtotime($datetime);
+        if ($diff < 60) return 'just now';
+        if ($diff < 3600) return floor($diff/60) . 'm ago';
+        if ($diff < 86400) return floor($diff/3600) . 'h ago';
+        return floor($diff/86400) . 'd ago';
+    }
+}
+// NOTE: statusBadge() and paymentBadge() are already defined in request_helper.php
+// Do NOT redeclare them here!
 ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Document Requests — DocuGo Admin</title>
-    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+    <title>Document Requests — ADFC DocuGo</title>
+    <link href="https://fonts.googleapis.com/css2?family=Sora:wght@300;400;600;700;800&family=DM+Sans:ital,wght@0,300;0,400;0,500;1,300&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
     <style>
-        /* ── Reset & Base ─────────────────────────────── */
-        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
+        /* ========== THEME VARIABLES ========== */
         :root {
-            --blue:      #1a56db;
-            --blue-dk:   #1447c0;
-            --blue-lt:   #eff6ff;
-            --green:     #059669;
-            --green-lt:  #f0fdf4;
-            --yellow:    #d97706;
-            --yellow-lt: #fffbeb;
-            --purple:    #7c3aed;
-            --purple-lt: #faf5ff;
-            --red:       #dc2626;
-            --red-lt:    #fef2f2;
-            --bg:        #f0f4f8;
-            --card:      #ffffff;
-            --border:    #e5e7eb;
-            --border-lt: #f3f4f6;
-            --text:      #111827;
-            --text-2:    #374151;
-            --text-3:    #6b7280;
-            --text-4:    #9ca3af;
-            --sidebar:   220px;
-            --shadow:    0 1px 4px rgba(0,0,0,0.06);
-            --shadow-md: 0 4px 16px rgba(0,0,0,0.08);
+            --primary:    #1a3ec7;
+            --primary-dk: #1230a0;
+            --accent:     #3b6bff;
+            --accent2:    #6b9fff;
+            --bg:         #080e28;
+            --bg2:        #0b1535;
+            --bg3:        #0e1c42;
+            --surface:    rgba(255,255,255,0.05);
+            --surface-hv: rgba(255,255,255,0.08);
+            --border:     rgba(255,255,255,0.08);
+            --border-hv:  rgba(59,107,255,0.25);
+            --text:       #dce6f8;
+            --text-muted: #7a96c4;
+            --text-dim:   #4a6190;
+            --green:      #4cd98a;
+            --yellow:     #fbbf24;
+            --purple:     #a78bfa;
+            --red:        #f87171;
+            --blue:       #60a5fa;
+            --radius-sm:  8px;
+            --radius-md:  12px;
+            --radius-lg:  16px;
+            --radius-xl:  24px;
+            --sidebar-width: 260px;
+            --ease-out:   cubic-bezier(0.16, 1, 0.3, 1);
+            --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+            
+            --sidebar-bg: #0f2a6b;
+            --sidebar-border: rgba(255,255,255,0.1);
+            --sidebar-text: #b8c9f0;
+            --sidebar-text-hover: #ffffff;
+            --sidebar-active-bg: rgba(59,107,255,0.25);
+            --sidebar-active-color: #ffffff;
+            --sidebar-section: #8eabff;
+            --card-bg: rgba(255,255,255,0.05);
         }
+
+        body.light {
+            --bg:         #eef2ff;
+            --bg2:        #e2e9ff;
+            --bg3:        #d8e2ff;
+            --surface:    rgba(255,255,255,0.6);
+            --surface-hv: rgba(255,255,255,0.85);
+            --border:     rgba(26,62,199,0.1);
+            --border-hv:  rgba(26,62,199,0.25);
+            --text:       #0c1836;
+            --text-muted: #3d5a92;
+            --text-dim:   #7a96c4;
+            --card-bg: #ffffff;
+            
+            --sidebar-bg: #2d4ed6;
+            --sidebar-border: rgba(255,255,255,0.15);
+            --sidebar-text: #e0e8ff;
+            --sidebar-text-hover: #ffffff;
+            --sidebar-active-bg: rgba(255,255,255,0.2);
+            --sidebar-active-color: #ffffff;
+            --sidebar-section: #c7d5ff;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
 
         body {
-            font-family: 'Plus Jakarta Sans', 'Segoe UI', sans-serif;
+            font-family: 'DM Sans', sans-serif;
             background: var(--bg);
             color: var(--text);
-            min-height: 100vh;
+            transition: background 0.3s, color 0.3s;
+            overflow-x: hidden;
             display: flex;
-            font-size: 14px;
-            line-height: 1.5;
         }
 
-        /* ── Sidebar (matching dashboard) ───────────────── */
+        /* ========== SIDEBAR ========== */
         .sidebar {
-            width: var(--sidebar);
-            background: var(--blue);
-            color: #fff;
-            min-height: 100vh;
-            flex-shrink: 0;
+            position: fixed;
+            left: 0;
+            top: 0;
+            width: var(--sidebar-width);
+            height: 100vh;
+            background: var(--sidebar-bg);
+            border-right: 1px solid var(--sidebar-border);
             display: flex;
             flex-direction: column;
-            position: fixed;
-            top: 0; left: 0; height: 100%;
             z-index: 100;
-            border-right: 1px solid rgba(255,255,255,0.1);
+            transition: transform 0.3s var(--ease-out), background 0.3s;
         }
 
         .sidebar-brand {
-            padding: 1.4rem 1.2rem 1.2rem;
-            border-bottom: 1px solid rgba(255,255,255,0.07);
+            padding: 1.5rem 1.2rem;
+            border-bottom: 1px solid var(--sidebar-border);
+            margin-bottom: 1rem;
         }
 
         .brand-logo {
             display: flex;
             align-items: center;
-            gap: 0.65rem;
-            margin-bottom: 0.2rem;
+            gap: 12px;
         }
 
-        .brand-icon {
-            width: 34px; height: 34px;
-            background: var(--blue);
-            border-radius: 9px;
-            display: flex; align-items: center; justify-content: center;
-            font-size: 1rem;
-            box-shadow: 0 2px 8px rgba(26,86,219,0.4);
+        .brand-logo img {
+            width: 48px;
+            height: 48px;
+            object-fit: contain;
+            border-radius: 12px;
+            transition: transform 0.3s var(--ease-spring);
+        }
+
+        .brand-logo img:hover {
+            transform: rotate(-5deg) scale(1.05);
+        }
+
+        .brand-text {
+            flex: 1;
         }
 
         .brand-name {
-            font-size: 1.2rem;
+            font-family: 'Sora', sans-serif;
             font-weight: 800;
-            color: #fff;
-            letter-spacing: -0.4px;
+            font-size: 0.9rem;
+            color: white;
+            line-height: 1.2;
         }
 
         .brand-sub {
-            font-size: 0.67rem;
-            color: rgba(255,255,255,0.4);
-            text-transform: uppercase;
-            letter-spacing: 0.08em;
-            font-weight: 600;
-            padding-left: 2.9rem;
+            font-size: 0.55rem;
+            color: rgba(255,255,255,0.7);
+            margin-top: 3px;
+            letter-spacing: 0.3px;
         }
 
-        .sidebar-menu { padding: 0.85rem 0; flex: 1; overflow-y: auto; }
-
-        .sidebar-footer {
-            padding: 0.9rem 1rem;
-            border-top: 1px solid rgba(255,255,255,0.15);
-            font-size: 0.8rem;
+        .sidebar-menu {
+            flex: 1;
+            padding: 0 0.8rem;
         }
-
-        .sidebar-footer a {
-            color: rgba(255,255,255,0.85);
-            text-decoration: none;
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-            transition: color 0.15s;
-        }
-
-        .sidebar-footer a:hover { color: #fff; }
 
         .menu-section {
-            padding: 0.8rem 1rem 0.2rem;
-            font-size: 0.62rem;
+            font-size: 0.65rem;
             font-weight: 700;
             text-transform: uppercase;
-            letter-spacing: 0.1em;
-            color: rgba(255,255,255,0.3);
+            letter-spacing: 1px;
+            color: var(--sidebar-section);
+            padding: 0.8rem 0.8rem 0.5rem;
         }
 
         .menu-item {
             display: flex;
             align-items: center;
-            gap: 0.7rem;
-            padding: 0.58rem 1rem;
-            margin: 1px 0.6rem;
-            border-radius: 8px;
-            color: rgba(255,255,255,0.6);
+            gap: 12px;
+            padding: 0.7rem 0.8rem;
+            border-radius: var(--radius-sm);
+            color: var(--sidebar-text);
             text-decoration: none;
-            font-size: 0.845rem;
+            font-size: 0.85rem;
             font-weight: 500;
-            transition: background 0.15s, color 0.15s;
-            position: relative;
+            transition: all 0.2s;
+            margin-bottom: 2px;
         }
 
-        .menu-item:hover  { background: rgba(255,255,255,0.07); color: rgba(255,255,255,0.9); }
-        .menu-item.active { background: rgba(255,255,255,0.15); color: #fff; font-weight: 600; }
-        .menu-item.active::before {
-            content: '';
-            position: absolute;
-            left: -0.6rem; top: 50%;
-            transform: translateY(-50%);
-            width: 3px; height: 20px;
-            background: #fff;
-            border-radius: 0 3px 3px 0;
+        .menu-item:hover {
+            background: var(--sidebar-active-bg);
+            color: var(--sidebar-text-hover);
         }
 
-        .menu-icon { font-size: 0.95rem; width: 18px; text-align: center; flex-shrink: 0; }
+        .menu-item.active {
+            background: var(--sidebar-active-bg);
+            color: var(--sidebar-active-color);
+            border-left: 2px solid white;
+        }
+
+        .menu-icon {
+            font-size: 1.1rem;
+            width: 24px;
+        }
+
         .menu-badge {
             margin-left: auto;
-            background: var(--red);
-            color: #fff;
-            font-size: 0.6rem;
-            font-weight: 800;
-            padding: 1px 6px;
-            border-radius: 8px;
-            min-width: 18px;
-            text-align: center;
+            background: rgba(255,255,255,0.25);
+            color: white;
+            font-size: 0.65rem;
+            font-weight: 700;
+            padding: 2px 8px;
+            border-radius: 20px;
         }
-        .menu-badge.yellow { background: var(--yellow); }
 
-        /* ── Main content ──────────────────────────────── */
-        .main { margin-left: var(--sidebar); flex: 1; padding: 1.8rem 2rem; min-width: 0; }
+        .menu-badge.yellow { background: var(--yellow); color: #1a1a2e; }
 
-        /* ── Topbar ───────────────────────────────────── */
-        .topbar {
+        .sidebar-footer {
+            padding: 1rem 0.8rem;
+            border-top: 1px solid var(--sidebar-border);
+            margin-top: auto;
+        }
+
+        .sidebar-footer a {
             display: flex;
             align-items: center;
+            gap: 10px;
+            padding: 0.7rem 0.8rem;
+            color: var(--sidebar-text);
+            text-decoration: none;
+            border-radius: var(--radius-sm);
+            transition: all 0.2s;
+        }
+
+        .sidebar-footer a:hover {
+            background: var(--sidebar-active-bg);
+            color: var(--red);
+        }
+
+        /* ========== MAIN CONTENT ========== */
+        .main {
+            margin-left: var(--sidebar-width);
+            padding: 1.5rem 2rem;
+            min-height: 100vh;
+            flex: 1;
+        }
+
+        /* Topbar */
+        .topbar {
+            display: flex;
             justify-content: space-between;
-            margin-bottom: 1.6rem;
+            align-items: center;
+            margin-bottom: 2rem;
+            flex-wrap: wrap;
             gap: 1rem;
         }
+
         .topbar-left h1 {
-            font-size: 1.4rem;
-            font-weight: 800;
+            font-family: 'Sora', sans-serif;
+            font-size: 1.6rem;
+            font-weight: 700;
             color: var(--text);
-            letter-spacing: -0.3px;
+            margin-bottom: 0.2rem;
         }
+
         .topbar-left p {
-            font-size: 0.82rem;
-            color: var(--text-3);
-            margin-top: 1px;
+            color: var(--text-muted);
+            font-size: 0.85rem;
         }
+
         .topbar-right {
             display: flex;
             align-items: center;
-            gap: 0.75rem;
-        }
-        .admin-info {
-            font-size: 0.85rem;
-            background: var(--card);
-            padding: 0.4rem 0.9rem;
-            border-radius: 20px;
-            border: 1px solid var(--border);
-        }
-        .topbar-date {
-            font-size: 0.78rem;
-            color: var(--text-3);
-            background: var(--card);
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            padding: 0.4rem 0.85rem;
+            gap: 1rem;
         }
 
-        /* ── Alert ────────────────────────────────────── */
+        .admin-info, .topbar-date {
+            background: var(--surface);
+            padding: 0.5rem 1rem;
+            border-radius: var(--radius-sm);
+            font-size: 0.85rem;
+            border: 1px solid var(--border);
+        }
+
+        /* Alert */
         .alert {
             padding: 0.85rem 1rem;
             border-radius: 10px;
             margin-bottom: 1.2rem;
             font-size: 0.85rem;
         }
-        .alert-success { background: #d1fae5; color: #065f46; border-left: 4px solid #10b981; }
-        .alert-error   { background: #fee2e2; color: #991b1b; border-left: 4px solid #ef4444; }
+        .alert-success { background: rgba(76,217,138,0.15); color: var(--green); border-left: 4px solid var(--green); }
+        .alert-error { background: rgba(248,113,113,0.15); color: var(--red); border-left: 4px solid var(--red); }
 
-        /* ── Stats mini cards (dashboard style) ────────── */
+        /* Stats Mini */
         .stats-mini {
             display: grid;
             grid-template-columns: repeat(4, 1fr);
             gap: 1rem;
-            margin-bottom: 1.4rem;
+            margin-bottom: 1.5rem;
         }
         .stat-card {
-            background: var(--card);
-            border-radius: 12px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
             padding: 1rem 1.1rem;
-            box-shadow: var(--shadow);
-            border: 1px solid var(--border-lt);
-            transition: box-shadow 0.2s, transform 0.2s;
+            transition: transform 0.2s;
         }
-        .stat-card:hover { box-shadow: var(--shadow-md); transform: translateY(-1px); }
-        .stat-num { font-size: 1.6rem; font-weight: 800; color: var(--text); line-height: 1; }
-        .stat-label { font-size: 0.72rem; color: var(--text-4); font-weight: 500; margin-top: 4px; text-transform: uppercase; letter-spacing: 0.04em; }
-        .stat-sub { font-size: 0.7rem; color: var(--text-3); margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--border-lt); }
+        .stat-card:hover { transform: translateY(-2px); border-color: var(--border-hv); }
+        .stat-num { font-family: 'Sora', sans-serif; font-size: 1.8rem; font-weight: 800; color: var(--text); line-height: 1; }
+        .stat-label { font-size: 0.7rem; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin-top: 5px; }
+        .stat-sub { font-size: 0.65rem; color: var(--text-dim); margin-top: 6px; padding-top: 5px; border-top: 1px solid var(--border); }
 
-        /* ── Tabs ─────────────────────────────────────── */
+        /* Tabs */
         .tabs {
             display: flex;
             flex-wrap: wrap;
             gap: 0.25rem;
-            background: var(--card);
+            background: var(--surface);
             padding: 0.5rem;
-            border-radius: 14px;
+            border-radius: var(--radius-md);
             margin-bottom: 1.2rem;
-            border: 1px solid var(--border-lt);
+            border: 1px solid var(--border);
         }
         .tab {
-            padding: 0.5rem 1rem;
-            font-size: 0.78rem;
+            padding: 0.45rem 1rem;
+            font-size: 0.75rem;
             font-weight: 600;
-            color: var(--text-3);
+            color: var(--text-muted);
             text-decoration: none;
-            border-radius: 8px;
+            border-radius: var(--radius-sm);
             transition: all 0.15s;
             display: inline-flex;
             align-items: center;
             gap: 0.4rem;
         }
-        .tab:hover { background: var(--bg); color: var(--blue); }
-        .tab.active { background: var(--blue); color: #fff; }
+        .tab:hover { background: var(--bg2); color: var(--accent); }
+        .tab.active { background: var(--accent); color: #fff; }
         .cnt {
-            background: rgba(0,0,0,0.05);
+            background: rgba(0,0,0,0.1);
             padding: 2px 7px;
             border-radius: 20px;
-            font-size: 0.65rem;
+            font-size: 0.6rem;
             font-weight: 700;
         }
         .tab.active .cnt { background: rgba(255,255,255,0.2); }
 
-        /* ── Filters ──────────────────────────────────── */
+        /* Filters */
         .filters {
             display: flex;
             justify-content: space-between;
@@ -447,116 +504,84 @@ function ago($datetime) {
             align-items: center;
         }
         .search-form input {
-            padding: 0.45rem 0.85rem;
+            padding: 0.5rem 0.85rem;
             border: 1px solid var(--border);
-            border-radius: 8px;
+            border-radius: var(--radius-sm);
             font-size: 0.8rem;
+            background: var(--bg2);
+            color: var(--text);
             width: 240px;
         }
         .search-form button, .btn-clear {
-            padding: 0.45rem 1rem;
-            background: var(--blue);
+            padding: 0.5rem 1rem;
+            background: var(--accent);
             color: #fff;
             border: none;
-            border-radius: 8px;
+            border-radius: var(--radius-sm);
             font-size: 0.75rem;
             font-weight: 600;
             cursor: pointer;
             text-decoration: none;
         }
-        .btn-clear {
-            background: var(--text-4);
-        }
-        .btn-clear:hover { background: var(--text-3); }
+        .btn-clear { background: var(--text-dim); }
+        .btn-clear:hover { opacity: 0.85; }
 
-        /* ── Card & Table ─────────────────────────────── */
+        /* Card */
         .card {
-            background: var(--card);
-            border-radius: 12px;
-            box-shadow: var(--shadow);
-            border: 1px solid var(--border-lt);
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
             overflow: hidden;
         }
         .card-header {
-            padding: 0.9rem 1.2rem;
-            border-bottom: 1px solid var(--border-lt);
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
+            padding: 1rem 1.2rem;
+            border-bottom: 1px solid var(--border);
         }
         .card-header h2 {
+            font-family: 'Sora', sans-serif;
             font-size: 0.9rem;
             font-weight: 700;
             color: var(--text);
         }
 
-        table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+        /* Table */
+        table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
         th {
             text-align: left;
-            padding: 0.6rem 1rem;
-            background: #fafafa;
-            color: var(--text-4);
+            padding: 0.75rem 1rem;
+            background: var(--bg2);
+            color: var(--text-dim);
             font-weight: 700;
             font-size: 0.68rem;
             text-transform: uppercase;
             letter-spacing: 0.06em;
-            border-bottom: 1px solid var(--border-lt);
+            border-bottom: 1px solid var(--border);
         }
         td {
             padding: 0.75rem 1rem;
-            border-bottom: 1px solid var(--border-lt);
-            color: var(--text-2);
+            border-bottom: 1px solid var(--border);
+            color: var(--text-muted);
             vertical-align: middle;
         }
-        tr:last-child td { border-bottom: none; }
-        tr:hover td { background: #fafbff; }
+        tr:hover td { background: var(--surface-hv); }
 
         .code {
             font-family: 'JetBrains Mono', monospace;
-            font-size: 0.72rem;
-            background: #f3f4f6;
+            font-size: 0.7rem;
+            background: var(--bg2);
             padding: 2px 6px;
             border-radius: 6px;
         }
-        .user-name { font-weight: 600; color: var(--text); font-size: 0.845rem; }
-        .user-meta { font-size: 0.7rem; color: var(--text-4); margin-top: 1px; }
+        .user-name { font-weight: 600; color: var(--text); font-size: 0.8rem; }
+        .user-meta { font-size: 0.65rem; color: var(--text-dim); margin-top: 2px; }
         .fee { font-weight: 700; color: var(--green); }
 
-        /* Badges (matching dashboard) */
-        .badge {
-            display: inline-flex;
-            align-items: center;
-            gap: 4px;
-            padding: 3px 9px;
-            border-radius: 20px;
-            font-size: 0.68rem;
-            font-weight: 700;
-            text-transform: capitalize;
-            white-space: nowrap;
-        }
-        .badge::before {
-            content: '';
-            width: 5px; height: 5px;
-            border-radius: 50%;
-        }
-        .badge-pending    { background: #fef3c7; color: #92400e; } .badge-pending::before    { background: #d97706; }
-        .badge-approved   { background: #dbeafe; color: #1e40af; } .badge-approved::before   { background: #3b82f6; }
-        .badge-processing { background: #e0f2fe; color: #0369a1; } .badge-processing::before { background: #0ea5e9; }
-        .badge-ready      { background: #fef9c3; color: #854d0e; } .badge-ready::before      { background: #eab308; }
-        .badge-paid       { background: #d1fae5; color: #065f46; } .badge-paid::before       { background: #10b981; }
-        .badge-released   { background: #ede9fe; color: #4c1d95; } .badge-released::before   { background: #8b5cf6; }
-        .badge-cancelled  { background: #fee2e2; color: #991b1b; } .badge-cancelled::before  { background: #ef4444; }
-
-        /* Action buttons */
-        .actions {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 0.4rem;
-        }
+        /* Buttons */
+        .actions { display: flex; flex-wrap: wrap; gap: 0.4rem; }
         .btn {
             padding: 4px 10px;
             border-radius: 6px;
-            font-size: 0.7rem;
+            font-size: 0.68rem;
             font-weight: 600;
             text-decoration: none;
             cursor: pointer;
@@ -567,14 +592,14 @@ function ago($datetime) {
             transition: all 0.12s;
             font-family: inherit;
         }
-        .btn-view      { background: #e0f2fe; color: #0369a1; }
-        .btn-approve   { background: #d1fae5; color: #065f46; }
-        .btn-process   { background: #dbeafe; color: #1e40af; }
-        .btn-ready     { background: #fef9c3; color: #854d0e; }
-        .btn-release   { background: #d1fae5; color: #065f46; }
-        .btn-stub      { background: #f3e8ff; color: #6b21a5; }
-        .btn-cancel    { background: #fee2e2; color: #991b1b; }
-        .btn:hover { filter: brightness(0.95); transform: translateY(-1px); }
+        .btn-view { background: rgba(96,165,250,0.15); color: #60a5fa; }
+        .btn-approve { background: rgba(76,217,138,0.15); color: #4cd98a; }
+        .btn-process { background: rgba(59,107,255,0.15); color: #3b6bff; }
+        .btn-ready { background: rgba(251,191,36,0.15); color: #fbbf24; }
+        .btn-release { background: rgba(76,217,138,0.15); color: #4cd98a; }
+        .btn-stub { background: rgba(167,139,250,0.15); color: #a78bfa; }
+        .btn-cancel { background: rgba(248,113,113,0.15); color: #f87171; }
+        .btn:hover { filter: brightness(0.9); transform: translateY(-1px); }
 
         /* Pagination */
         .pagination {
@@ -585,31 +610,27 @@ function ago($datetime) {
         }
         .pagination a, .pagination span {
             padding: 0.4rem 0.8rem;
-            background: var(--card);
+            background: var(--surface);
             border: 1px solid var(--border);
             border-radius: 6px;
             text-decoration: none;
-            color: var(--text-2);
-            font-size: 0.8rem;
+            color: var(--text-muted);
+            font-size: 0.75rem;
         }
         .pagination .active {
-            background: var(--blue);
-            border-color: var(--blue);
+            background: var(--accent);
+            border-color: var(--accent);
             color: #fff;
         }
-        .empty-state {
-            text-align: center;
-            padding: 2.5rem;
-            color: var(--text-4);
-        }
+        .empty-state { text-align: center; padding: 2.5rem; color: var(--text-dim); }
 
         /* Modal */
         .modal-overlay {
             position: fixed;
             top: 0; left: 0;
             width: 100%; height: 100%;
-            background: rgba(0,0,0,0.5);
-            backdrop-filter: blur(2px);
+            background: rgba(0,0,0,0.6);
+            backdrop-filter: blur(4px);
             display: flex;
             align-items: center;
             justify-content: center;
@@ -618,78 +639,88 @@ function ago($datetime) {
             transition: 0.2s;
             z-index: 1000;
         }
-        .modal-overlay.open {
-            visibility: visible;
-            opacity: 1;
-        }
+        .modal-overlay.open { visibility: visible; opacity: 1; }
         .modal {
-            background: var(--card);
-            border-radius: 20px;
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
             width: 90%;
             max-width: 460px;
             padding: 1.5rem;
-            box-shadow: var(--shadow-md);
         }
-        .modal h2 {
-            font-size: 1.2rem;
-            margin-bottom: 0.5rem;
-        }
-        .field {
-            margin: 1rem 0;
-        }
-        .field label {
-            display: block;
-            font-size: 0.78rem;
-            font-weight: 700;
-            margin-bottom: 4px;
-        }
+        .modal h2 { font-family: 'Sora', sans-serif; font-size: 1.1rem; margin-bottom: 0.5rem; color: var(--text); }
+        .field { margin: 1rem 0; }
+        .field label { display: block; font-size: 0.75rem; font-weight: 700; margin-bottom: 4px; color: var(--text-muted); }
         .field input, .field textarea {
             width: 100%;
             padding: 0.6rem;
             border: 1px solid var(--border);
-            border-radius: 8px;
-            font-size: 0.85rem;
+            border-radius: var(--radius-sm);
+            font-size: 0.8rem;
+            background: var(--bg2);
+            color: var(--text);
         }
-        .modal-actions {
-            display: flex;
-            gap: 0.8rem;
-            justify-content: flex-end;
-            margin-top: 1rem;
-        }
+        .modal-actions { display: flex; gap: 0.8rem; justify-content: flex-end; margin-top: 1rem; }
         .modal-cancel, .modal-confirm {
             padding: 0.5rem 1.2rem;
-            border-radius: 8px;
+            border-radius: var(--radius-sm);
             font-weight: 600;
             cursor: pointer;
             border: none;
         }
-        .modal-cancel { background: #f3f4f6; color: #374151; }
+        .modal-cancel { background: var(--surface); color: var(--text-muted); }
         .modal-confirm { background: var(--green); color: #fff; }
 
-        /* Responsive */
-        @media (max-width: 900px) {
-            .sidebar { display: none; }
-            .main { margin-left: 0; padding: 1rem; }
+        /* Theme Toggle */
+        .theme-toggle {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            width: 42px;
+            height: 42px;
+            border-radius: 50%;
+            background: var(--surface);
+            backdrop-filter: blur(12px);
+            border: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            color: var(--text);
+            font-size: 1.1rem;
+            z-index: 99;
+            transition: transform 0.2s;
+        }
+        .theme-toggle:hover { transform: scale(1.1); background: var(--surface-hv); }
+
+        @media (max-width: 1024px) {
             .stats-mini { grid-template-columns: repeat(2, 1fr); }
         }
-        @media (max-width: 700px) {
-            .stats-mini { grid-template-columns: 1fr 1fr; }
+        @media (max-width: 768px) {
+            .sidebar { transform: translateX(-100%); }
+            .sidebar.open { transform: translateX(0); }
+            .main { margin-left: 0; padding: 1rem; }
+            .stats-mini { grid-template-columns: 1fr; }
+            .tabs { overflow-x: auto; flex-wrap: nowrap; }
         }
     </style>
 </head>
 <body>
 
-<!-- Sidebar (identical to dashboard) -->
-<aside class="sidebar">
+<!-- Sidebar -->
+<aside class="sidebar" id="sidebar">
     <div class="sidebar-brand">
         <div class="brand-logo">
-            <div class="brand-icon">📄</div>
-            <div class="brand-name">DocuGo</div>
+            <img id="sidebarLogo" src="../wlogo.png" alt="ADFC Logo">
+            <div class="brand-text">
+                <div class="brand-name">Asian Development<br>Foundation College</div>
+                <div class="brand-sub">DocuGo Admin Panel</div>
+            </div>
         </div>
-        <div class="brand-sub">Admin Panel</div>
     </div>
+
     <nav class="sidebar-menu">
-        <div class="menu-section">Main</div>
+        <div class="menu-section">MAIN</div>
         <a href="dashboard.php" class="menu-item">
             <span class="menu-icon">🏠</span> Dashboard
         </a>
@@ -705,67 +736,50 @@ function ago($datetime) {
                 <span class="menu-badge"><?= $pendingAccs ?></span>
             <?php endif; ?>
         </a>
-        <div class="menu-section">Records</div>
+
+        <div class="menu-section">RECORDS</div>
         <a href="alumni.php" class="menu-item"><span class="menu-icon">🎓</span> Alumni</a>
         <a href="tracer.php" class="menu-item"><span class="menu-icon">📊</span> Graduate Tracer</a>
         <a href="reports.php" class="menu-item"><span class="menu-icon">📈</span> Reports</a>
-        <div class="menu-section">Communication</div>
+
+        <div class="menu-section">COMMUNICATION</div>
         <a href="announcements.php" class="menu-item"><span class="menu-icon">📢</span> Announcements</a>
-        <div class="menu-section">Settings</div>
+
+        <div class="menu-section">SETTINGS</div>
         <a href="document_types.php" class="menu-item"><span class="menu-icon">⚙️</span> Document Types</a>
     </nav>
+
     <div class="sidebar-footer">
-        <a href="../logout.php">🚪 Logout</a>
+        <a href="../logout.php"><span class="menu-icon">🚪</span> Logout</a>
     </div>
 </aside>
 
 <!-- Main Content -->
 <main class="main">
-    <!-- Topbar -->
     <div class="topbar">
         <div class="topbar-left">
             <h1>Document Requests</h1>
             <p>Manage and process all document requests from students and alumni.</p>
         </div>
         <div class="topbar-right">
-            <div class="admin-info">
-                <strong><?= e($_SESSION['user_name']) ?></strong>
-            </div>
-            <div class="topbar-date">
-                📅 <?= date('l, F j, Y') ?>
-            </div>
+            <div class="admin-info"><i class="fas fa-user-circle"></i> <strong><?= escape($_SESSION['user_name']) ?></strong></div>
+            <div class="topbar-date"><i class="fas fa-calendar-alt"></i> <?= date('l, F j, Y') ?></div>
         </div>
     </div>
 
     <!-- Alerts -->
     <?php if (!empty($_GET['msg'])): ?>
-    <div class="alert alert-<?= e($_GET['msgtype'] ?? 'success') ?>">
-        <?= e($_GET['msg']) ?>
+    <div class="alert alert-<?= escape($_GET['msgtype'] ?? 'success') ?>">
+        <?= escape($_GET['msg']) ?>
     </div>
     <?php endif; ?>
 
-    <!-- Quick Stats (like dashboard) -->
+    <!-- Quick Stats -->
     <div class="stats-mini">
-        <div class="stat-card">
-            <div class="stat-num"><?= $tabCounts['pending'] ?? 0 ?></div>
-            <div class="stat-label">Pending Approval</div>
-            <div class="stat-sub">Awaiting review</div>
-        </div>
-        <div class="stat-card">
-            <div class="stat-num"><?= ($tabCounts['approved'] ?? 0) + ($tabCounts['for_signature'] ?? 0) ?></div>
-            <div class="stat-label">In Review</div>
-            <div class="stat-sub">Approved / For Signature</div>
-        </div>
-        <div class="stat-card">
-            <div class="stat-num"><?= ($tabCounts['processing'] ?? 0) + ($tabCounts['ready'] ?? 0) ?></div>
-            <div class="stat-label">Active</div>
-            <div class="stat-sub">Processing + Ready</div>
-        </div>
-        <div class="stat-card">
-            <div class="stat-num"><?= $tabCounts['released'] ?? 0 ?></div>
-            <div class="stat-label">Completed</div>
-            <div class="stat-sub">Successfully released</div>
-        </div>
+        <div class="stat-card"><div class="stat-num"><?= $tabCounts['pending'] ?? 0 ?></div><div class="stat-label">Pending Approval</div><div class="stat-sub">Awaiting review</div></div>
+        <div class="stat-card"><div class="stat-num"><?= ($tabCounts['approved'] ?? 0) + ($tabCounts['for_signature'] ?? 0) ?></div><div class="stat-label">In Review</div><div class="stat-sub">Approved / For Signature</div></div>
+        <div class="stat-card"><div class="stat-num"><?= ($tabCounts['processing'] ?? 0) + ($tabCounts['ready'] ?? 0) ?></div><div class="stat-label">Active</div><div class="stat-sub">Processing + Ready</div></div>
+        <div class="stat-card"><div class="stat-num"><?= $tabCounts['released'] ?? 0 ?></div><div class="stat-label">Completed</div><div class="stat-sub">Successfully released</div></div>
     </div>
 
     <!-- Status Tabs -->
@@ -778,7 +792,6 @@ function ago($datetime) {
             'for_signature' => ['For Signature', $tabCounts['for_signature'] ?? 0],
             'processing' => ['Processing', $tabCounts['processing'] ?? 0],
             'ready'      => ['Ready', $tabCounts['ready'] ?? 0],
-            'paid'       => ['Paid', $tabCounts['paid'] ?? 0],
             'released'   => ['Released', $tabCounts['released'] ?? 0],
             'cancelled'  => ['Cancelled', $tabCounts['cancelled'] ?? 0],
         ];
@@ -788,126 +801,63 @@ function ago($datetime) {
             $active = ($status === $val) ? 'active' : '';
             $url = '?' . http_build_query(['status' => $val, 'q' => $search]);
         ?>
-            <a href="<?= $url ?>" class="tab <?= $active ?>">
-                <?= $label ?> <span class="cnt"><?= $cnt ?></span>
-            </a>
+            <a href="<?= $url ?>" class="tab <?= $active ?>"><?= $label ?> <span class="cnt"><?= $cnt ?></span></a>
         <?php endforeach; ?>
     </div>
 
-    <!-- Filters & Search -->
+    <!-- Filters -->
     <div class="filters">
-        <div style="font-size:0.8rem; color:var(--text-3);">
-            Showing <strong><?= $totalRows ?></strong> request<?= $totalRows != 1 ? 's' : '' ?>
-        </div>
+        <div style="font-size:0.75rem; color:var(--text-muted);">Showing <strong><?= $totalRows ?></strong> request<?= $totalRows != 1 ? 's' : '' ?></div>
         <form method="GET" class="search-form">
-            <input type="hidden" name="status" value="<?= e($status) ?>">
-            <input type="text" name="q" placeholder="Search name, code, email…" value="<?= e($search) ?>">
-            <button type="submit">🔍 Search</button>
+            <input type="hidden" name="status" value="<?= escape($status) ?>">
+            <input type="text" name="q" placeholder="Search name, code, email…" value="<?= escape($search) ?>">
+            <button type="submit"><i class="fas fa-search"></i> Search</button>
             <?php if ($search): ?>
-                <a href="?status=<?= e($status) ?>" class="btn-clear">✕ Clear</a>
+                <a href="?status=<?= escape($status) ?>" class="btn-clear"><i class="fas fa-times"></i> Clear</a>
             <?php endif; ?>
         </form>
     </div>
 
     <!-- Requests Table -->
     <div class="card">
-        <div class="card-header">
-            <h2>📋 Request List</h2>
-        </div>
+        <div class="card-header"><h2><i class="fas fa-list"></i> Request List</h2></div>
         <div style="overflow-x: auto;">
             <table>
                 <thead>
-                    <tr>
-                        <th>Code</th>
-                        <th>Requester</th>
-                        <th>Document</th>
-                        <th>Fee</th>
-                        <th>Status</th>
-                        <th>Payment</th>
-                        <th>Date</th>
-                        <th>Actions</th>
-                    </tr>
+                    <tr><th>Code</th><th>Requester</th><th>Document</th><th>Fee</th><th>Status</th><th>Payment</th><th>Date</th><th>Actions</th></tr>
                 </thead>
                 <tbody>
                 <?php if ($requests->num_rows > 0): ?>
                     <?php while ($r = $requests->fetch_assoc()): ?>
                         <tr>
-                            <td><span class="code"><?= e($r['request_code']) ?></span></td>
-                            <td>
-                                <div class="user-name"><?= e($r['first_name'] . ' ' . $r['last_name']) ?></div>
-                                <div class="user-meta"><?= e($r['email']) ?></div>
-                                <?php if ($r['student_id']): ?>
-                                    <div class="user-meta">ID: <?= e($r['student_id']) ?></div>
-                                <?php endif; ?>
-                            </td>
-                            <td>
-                                <?= e($r['doc_type']) ?>
-                                <div class="user-meta"><?= $r['copies'] ?> cop<?= $r['copies'] > 1 ? 'ies' : 'y' ?></div>
-                            </td>
+                            <td><span class="code"><?= escape($r['request_code']) ?></span></td>
+                            <td><div class="user-name"><?= escape($r['first_name'] . ' ' . $r['last_name']) ?></div><div class="user-meta"><?= escape($r['email']) ?></div><?php if ($r['student_id']): ?><div class="user-meta">ID: <?= escape($r['student_id']) ?></div><?php endif; ?></td>
+                            <td><?= escape($r['doc_type']) ?><div class="user-meta"><?= $r['copies'] ?> copy(s)</div></td>
                             <td><span class="fee">₱<?= number_format($r['total_fee'], 2) ?></span></td>
                             <td><?= statusBadge($r['status']) ?></td>
-
-                            <?php /* FIX #1: Removed $r['payment_status'] — column dropped.
-                                 Now derives paid state from official_receipt_number (FIX #10 fallback included)  */ ?>
-                            <td>
-                                <?php $isPaid = !empty($r['official_receipt_number']) || $r['status'] === 'paid' || $r['status'] === 'released'; ?>
-                                <?= paymentBadge($isPaid) ?>
-                            </td>
-
-                            <td>
-                                <?= fd($r['requested_at']) ?>
-                                <?php if ($r['payment_date']): ?>
-                                    <div class="user-meta">Paid: <?= fd($r['payment_date']) ?></div>
+                            <td><?php $isPaid = !empty($r['official_receipt_number']) || $r['status'] === 'released'; echo paymentBadge($isPaid); ?></td>
+                            <td><?= formatDate($r['requested_at']) ?><?php if ($r['payment_date']): ?><div class="user-meta">Paid: <?= formatDate($r['payment_date']) ?></div><?php endif; ?></td>
+                            <td><div class="actions">
+                                <a href="request_detail.php?id=<?= $r['id'] ?>" class="btn btn-view"><i class="fas fa-eye"></i> View</a>
+                                <?php if ($r['status'] === 'pending'): ?>
+                                <form method="POST" style="display:inline;"><input type="hidden" name="request_id" value="<?= $r['id'] ?>"><input type="hidden" name="action" value="approve"><button class="btn btn-approve" onclick="return confirm('Approve this request?')"><i class="fas fa-check"></i> Approve</button></form>
                                 <?php endif; ?>
-                            </td>
-                            <td>
-                                <div class="actions">
-                                    <a href="request_detail.php?id=<?= $r['id'] ?>" class="btn btn-view">View</a>
-
-                                    <?php if ($r['status'] === 'pending'): ?>
-                                        <form method="POST" style="display:inline;">
-                                            <input type="hidden" name="request_id" value="<?= $r['id'] ?>">
-                                            <input type="hidden" name="action" value="approve">
-                                            <button class="btn btn-approve" onclick="return confirm('Approve this request?')">✓ Approve</button>
-                                        </form>
-                                    <?php endif; ?>
-
-                                    <?php if (in_array($r['status'], ['for_signature', 'approved'])): ?>
-                                        <form method="POST" style="display:inline;">
-                                            <input type="hidden" name="request_id" value="<?= $r['id'] ?>">
-                                            <input type="hidden" name="action" value="process">
-                                            <button class="btn btn-process" onclick="return confirm('Mark as Processing?')">⚙ Process</button>
-                                        </form>
-                                    <?php endif; ?>
-
-                                    <?php if ($r['status'] === 'processing'): ?>
-                                        <form method="POST" style="display:inline;">
-                                            <input type="hidden" name="request_id" value="<?= $r['id'] ?>">
-                                            <input type="hidden" name="action" value="ready">
-                                            <button class="btn btn-ready" onclick="return confirm('Mark as Ready for pickup?')">📋 Ready</button>
-                                        </form>
-                                    <?php endif; ?>
-
-                                    <?php if ($r['status'] === 'ready'): ?>
-                                        <button class="btn btn-release"
-                                            onclick="openPayModal(<?= $r['id'] ?>, '<?= e($r['request_code']) ?>', <?= $r['total_fee'] ?>, '<?= e($r['first_name'] . ' ' . $r['last_name']) ?>')">
-                                            💳 Pay & Release
-                                        </button>
-                                    <?php endif; ?>
-
-                                    <?php if ($r['stub_code']): ?>
-                                        <a href="../student/claim_stub.php?code=<?= e($r['stub_code']) ?>&admin=1" target="_blank" class="btn btn-stub">🖨 Stub</a>
-                                    <?php endif; ?>
-
-                                    <?php if (!in_array($r['status'], ['released', 'cancelled'])): ?>
-                                        <form method="POST" style="display:inline;">
-                                            <input type="hidden" name="request_id" value="<?= $r['id'] ?>">
-                                            <input type="hidden" name="action" value="cancel">
-                                            <button class="btn btn-cancel" onclick="return confirm('Cancel this request?')">✕ Cancel</button>
-                                        </form>
-                                    <?php endif; ?>
-                                </div>
-                            </td>
+                                <?php if (in_array($r['status'], ['for_signature', 'approved'])): ?>
+                                <form method="POST" style="display:inline;"><input type="hidden" name="request_id" value="<?= $r['id'] ?>"><input type="hidden" name="action" value="process"><button class="btn btn-process" onclick="return confirm('Mark as Processing?')"><i class="fas fa-cog"></i> Process</button></form>
+                                <?php endif; ?>
+                                <?php if ($r['status'] === 'processing'): ?>
+                                <form method="POST" style="display:inline;"><input type="hidden" name="request_id" value="<?= $r['id'] ?>"><input type="hidden" name="action" value="ready"><button class="btn btn-ready" onclick="return confirm('Mark as Ready for pickup?')"><i class="fas fa-clipboard-list"></i> Ready</button></form>
+                                <?php endif; ?>
+                                <?php if ($r['status'] === 'ready'): ?>
+                                <button class="btn btn-release" onclick="openPayModal(<?= $r['id'] ?>, '<?= escape($r['request_code']) ?>', <?= $r['total_fee'] ?>, '<?= escape($r['first_name'] . ' ' . $r['last_name']) ?>')"><i class="fas fa-credit-card"></i> Pay & Release</button>
+                                <?php endif; ?>
+                                <?php if ($r['stub_code']): ?>
+                                <a href="../student/claim_stub.php?code=<?= escape($r['stub_code']) ?>&admin=1" target="_blank" class="btn btn-stub"><i class="fas fa-receipt"></i> Stub</a>
+                                <?php endif; ?>
+                                <?php if (!in_array($r['status'], ['released', 'cancelled'])): ?>
+                                <form method="POST" style="display:inline;"><input type="hidden" name="request_id" value="<?= $r['id'] ?>"><input type="hidden" name="action" value="cancel"><button class="btn btn-cancel" onclick="return confirm('Cancel this request?')"><i class="fas fa-times"></i> Cancel</button></form>
+                                <?php endif; ?>
+                            </div></td>
                         </tr>
                     <?php endwhile; ?>
                 <?php else: ?>
@@ -922,7 +872,7 @@ function ago($datetime) {
     <?php if ($totalPages > 1): ?>
     <div class="pagination">
         <?php if ($page > 1): ?>
-            <a href="?<?= http_build_query(['status'=>$status,'q'=>$search,'page'=>$page-1]) ?>">← Prev</a>
+            <a href="?<?= http_build_query(['status'=>$status,'q'=>$search,'page'=>$page-1]) ?>"><i class="fas fa-chevron-left"></i> Prev</a>
         <?php endif; ?>
         <?php for ($i = 1; $i <= $totalPages; $i++): ?>
             <?php if ($i === $page): ?>
@@ -932,46 +882,74 @@ function ago($datetime) {
             <?php endif; ?>
         <?php endfor; ?>
         <?php if ($page < $totalPages): ?>
-            <a href="?<?= http_build_query(['status'=>$status,'q'=>$search,'page'=>$page+1]) ?>">Next →</a>
+            <a href="?<?= http_build_query(['status'=>$status,'q'=>$search,'page'=>$page+1]) ?>">Next <i class="fas fa-chevron-right"></i></a>
         <?php endif; ?>
     </div>
     <?php endif; ?>
 </main>
 
-<!-- Pay & Release Modal (matching dashboard style) -->
+<!-- Pay & Release Modal -->
 <div class="modal-overlay" id="payModal">
     <div class="modal">
-        <h2>💳 Pay & Release Document</h2>
-        <p id="modalDesc" style="color: var(--text-3); margin-bottom: 0.5rem;">Record payment and release the document.</p>
+        <h2><i class="fas fa-credit-card"></i> Pay & Release Document</h2>
+        <p id="modalDesc" style="color: var(--text-muted); margin-bottom: 0.5rem; font-size:0.8rem;">Record payment and release the document.</p>
         <form method="POST" action="pay_release.php">
             <input type="hidden" name="request_id" id="modalRequestId">
             <div class="field">
-                <label>Official Receipt Number <span style="color:#e11d48;">*</span></label>
+                <label>Official Receipt Number <span style="color:var(--red);">*</span></label>
                 <input type="text" name="receipt_number" id="modalReceipt" placeholder="e.g. OR-2024-00123" required>
             </div>
             <div class="field">
                 <label>Amount to Collect</label>
-                <input type="text" id="modalAmount" readonly style="background:#f9fafb; font-weight:700; color:#059669;">
+                <input type="text" id="modalAmount" readonly style="background:var(--bg2); font-weight:700; color:var(--green);">
             </div>
             <div class="field">
-                <label>Notes <span style="color:#9ca3af;">(optional)</span></label>
+                <label>Notes (optional)</label>
                 <textarea name="notes" placeholder="Any additional notes…" rows="2"></textarea>
             </div>
-            <div style="background:#fffbeb; border-left:4px solid #fcd34d; border-radius:8px; padding:0.75rem; margin-bottom:0.5rem; font-size:0.78rem; color:#92400e;">
-                ⚠️ This action will record payment and release the document. Cannot be undone.
+            <div style="background:rgba(251,191,36,0.1); border-left:4px solid var(--yellow); border-radius:8px; padding:0.75rem; margin-bottom:0.5rem; font-size:0.75rem; color:var(--yellow);">
+                <i class="fas fa-exclamation-triangle"></i> This action will record payment and release the document. Cannot be undone.
             </div>
             <div class="modal-actions">
                 <button type="button" class="modal-cancel" onclick="closePayModal()">Cancel</button>
-                <button type="submit" class="modal-confirm">✓ Confirm Payment & Release</button>
+                <button type="submit" class="modal-confirm"><i class="fas fa-check"></i> Confirm Payment & Release</button>
             </div>
         </form>
     </div>
 </div>
 
+<!-- Theme Toggle -->
+<div class="theme-toggle" id="themeToggleBtn">
+    <i class="fas fa-moon"></i>
+</div>
+
 <script>
+// Theme Toggle
+const applyLogoForTheme = (isLight) => {
+    const logoImg = document.getElementById('sidebarLogo');
+    if (logoImg) logoImg.src = isLight ? '../wlogo.png' : '../wlogo.png';
+};
+const savedTheme = localStorage.getItem('docugoTheme');
+const isLightOnLoad = savedTheme === 'light';
+if (isLightOnLoad) {
+    document.body.classList.add('light');
+    document.getElementById('themeToggleBtn').innerHTML = '<i class="fas fa-sun"></i>';
+} else {
+    document.body.classList.remove('light');
+    document.getElementById('themeToggleBtn').innerHTML = '<i class="fas fa-moon"></i>';
+}
+applyLogoForTheme(isLightOnLoad);
+document.getElementById('themeToggleBtn').addEventListener('click', () => {
+    const isLight = document.body.classList.toggle('light');
+    localStorage.setItem('docugoTheme', isLight ? 'light' : 'dark');
+    document.getElementById('themeToggleBtn').innerHTML = isLight ? '<i class="fas fa-sun"></i>' : '<i class="fas fa-moon"></i>';
+    applyLogoForTheme(isLight);
+});
+
+// Modal functions
 function openPayModal(id, code, fee, name) {
     document.getElementById('modalRequestId').value = id;
-    document.getElementById('modalDesc').textContent = `Request ${code} — ${name}`;
+    document.getElementById('modalDesc').innerHTML = `Request ${code} — ${name}`;
     document.getElementById('modalAmount').value = '₱' + parseFloat(fee).toFixed(2);
     document.getElementById('payModal').classList.add('open');
 }
@@ -982,6 +960,5 @@ document.getElementById('payModal').addEventListener('click', function(e) {
     if (e.target === this) closePayModal();
 });
 </script>
-
 </body>
 </html>

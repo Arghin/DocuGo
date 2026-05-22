@@ -94,239 +94,309 @@ $completionRate = $totalRequests > 0 ? round(($releasedCount / $totalRequests) *
 
 $conn->close();
 
-function e($v) { return htmlspecialchars($v ?? ''); }
+function escape($v) { return htmlspecialchars($v ?? ''); }
 ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Reports & Analytics — DocuGo Admin</title>
-    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+    <title>Reports & Analytics — ADFC DocuGo</title>
+    <link href="https://fonts.googleapis.com/css2?family=Sora:wght@300;400;600;700;800&family=DM+Sans:ital,wght@0,300;0,400;0,500;1,300&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
     <style>
-        /* ── Reset & Base ─────────────────────────────── */
-        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
+        /* ========== THEME VARIABLES ========== */
         :root {
-            --blue:      #1a56db;
-            --blue-dk:   #1447c0;
-            --blue-lt:   #eff6ff;
-            --green:     #059669;
-            --green-lt:  #f0fdf4;
-            --yellow:    #d97706;
-            --yellow-lt: #fffbeb;
-            --purple:    #7c3aed;
-            --purple-lt: #faf5ff;
-            --red:       #dc2626;
-            --red-lt:    #fef2f2;
-            --bg:        #f0f4f8;
-            --card:      #ffffff;
-            --border:    #e5e7eb;
-            --border-lt: #f3f4f6;
-            --text:      #111827;
-            --text-2:    #374151;
-            --text-3:    #6b7280;
-            --text-4:    #9ca3af;
-            --sidebar:   220px;
-            --shadow:    0 1px 4px rgba(0,0,0,0.06);
-            --shadow-md: 0 4px 16px rgba(0,0,0,0.08);
+            --primary:    #1a3ec7;
+            --primary-dk: #1230a0;
+            --accent:     #3b6bff;
+            --accent2:    #6b9fff;
+            --bg:         #080e28;
+            --bg2:        #0b1535;
+            --bg3:        #0e1c42;
+            --surface:    rgba(255,255,255,0.05);
+            --surface-hv: rgba(255,255,255,0.08);
+            --border:     rgba(255,255,255,0.08);
+            --border-hv:  rgba(59,107,255,0.25);
+            --text:       #dce6f8;
+            --text-muted: #7a96c4;
+            --text-dim:   #4a6190;
+            --green:      #4cd98a;
+            --yellow:     #fbbf24;
+            --purple:     #a78bfa;
+            --red:        #f87171;
+            --blue:       #60a5fa;
+            --radius-sm:  8px;
+            --radius-md:  12px;
+            --radius-lg:  16px;
+            --radius-xl:  24px;
+            --sidebar-width: 260px;
+            --ease-out:   cubic-bezier(0.16, 1, 0.3, 1);
+            --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+            
+            --sidebar-bg: #0f2a6b;
+            --sidebar-border: rgba(255,255,255,0.1);
+            --sidebar-text: #b8c9f0;
+            --sidebar-text-hover: #ffffff;
+            --sidebar-active-bg: rgba(59,107,255,0.25);
+            --sidebar-active-color: #ffffff;
+            --sidebar-section: #8eabff;
+            --card-bg: rgba(255,255,255,0.05);
         }
+
+        body.light {
+            --bg:         #eef2ff;
+            --bg2:        #e2e9ff;
+            --bg3:        #d8e2ff;
+            --surface:    rgba(255,255,255,0.6);
+            --surface-hv: rgba(255,255,255,0.85);
+            --border:     rgba(26,62,199,0.1);
+            --border-hv:  rgba(26,62,199,0.25);
+            --text:       #0c1836;
+            --text-muted: #3d5a92;
+            --text-dim:   #7a96c4;
+            --card-bg: #ffffff;
+            
+            --sidebar-bg: #2d4ed6;
+            --sidebar-border: rgba(255,255,255,0.15);
+            --sidebar-text: #e0e8ff;
+            --sidebar-text-hover: #ffffff;
+            --sidebar-active-bg: rgba(255,255,255,0.2);
+            --sidebar-active-color: #ffffff;
+            --sidebar-section: #c7d5ff;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
 
         body {
-            font-family: 'Plus Jakarta Sans', 'Segoe UI', sans-serif;
+            font-family: 'DM Sans', sans-serif;
             background: var(--bg);
             color: var(--text);
-            min-height: 100vh;
+            transition: background 0.3s, color 0.3s;
+            overflow-x: hidden;
             display: flex;
-            font-size: 14px;
-            line-height: 1.5;
         }
 
-        /* ── Sidebar (matching dashboard) ───────────────── */
+        /* ========== SIDEBAR ========== */
         .sidebar {
-            width: var(--sidebar);
-            background: var(--blue);
-            color: #fff;
-            min-height: 100vh;
-            flex-shrink: 0;
+            position: fixed;
+            left: 0;
+            top: 0;
+            width: var(--sidebar-width);
+            height: 100vh;
+            background: var(--sidebar-bg);
+            border-right: 1px solid var(--sidebar-border);
             display: flex;
             flex-direction: column;
-            position: fixed;
-            top: 0; left: 0; height: 100%;
             z-index: 100;
-            border-right: 1px solid rgba(255,255,255,0.1);
+            transition: transform 0.3s var(--ease-out), background 0.3s;
         }
 
         .sidebar-brand {
-            padding: 1.4rem 1.2rem 1.2rem;
-            border-bottom: 1px solid rgba(255,255,255,0.07);
+            padding: 1.5rem 1.2rem;
+            border-bottom: 1px solid var(--sidebar-border);
+            margin-bottom: 1rem;
         }
 
         .brand-logo {
             display: flex;
             align-items: center;
-            gap: 0.65rem;
-            margin-bottom: 0.2rem;
+            gap: 12px;
         }
 
-        .brand-icon {
-            width: 34px; height: 34px;
-            background: var(--blue);
-            border-radius: 9px;
-            display: flex; align-items: center; justify-content: center;
-            font-size: 1rem;
-            box-shadow: 0 2px 8px rgba(26,86,219,0.4);
+        .brand-logo img {
+            width: 48px;
+            height: 48px;
+            object-fit: contain;
+            border-radius: 12px;
+            transition: transform 0.3s var(--ease-spring);
+        }
+
+        .brand-logo img:hover {
+            transform: rotate(-5deg) scale(1.05);
+        }
+
+        .brand-text {
+            flex: 1;
         }
 
         .brand-name {
-            font-size: 1.2rem;
+            font-family: 'Sora', sans-serif;
             font-weight: 800;
-            color: #fff;
-            letter-spacing: -0.4px;
+            font-size: 0.9rem;
+            color: white;
+            line-height: 1.2;
         }
 
         .brand-sub {
-            font-size: 0.67rem;
-            color: rgba(255,255,255,0.4);
-            text-transform: uppercase;
-            letter-spacing: 0.08em;
-            font-weight: 600;
-            padding-left: 2.9rem;
+            font-size: 0.55rem;
+            color: rgba(255,255,255,0.7);
+            margin-top: 3px;
+            letter-spacing: 0.3px;
         }
 
-        .sidebar-menu { padding: 0.85rem 0; flex: 1; overflow-y: auto; }
-
-        .sidebar-footer {
-            padding: 0.9rem 1rem;
-            border-top: 1px solid rgba(255,255,255,0.15);
-            font-size: 0.8rem;
+        .sidebar-menu {
+            flex: 1;
+            padding: 0 0.8rem;
         }
-
-        .sidebar-footer a {
-            color: rgba(255,255,255,0.85);
-            text-decoration: none;
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-            transition: color 0.15s;
-        }
-
-        .sidebar-footer a:hover { color: #fff; }
 
         .menu-section {
-            padding: 0.8rem 1rem 0.2rem;
-            font-size: 0.62rem;
+            font-size: 0.65rem;
             font-weight: 700;
             text-transform: uppercase;
-            letter-spacing: 0.1em;
-            color: rgba(255,255,255,0.3);
+            letter-spacing: 1px;
+            color: var(--sidebar-section);
+            padding: 0.8rem 0.8rem 0.5rem;
         }
 
         .menu-item {
             display: flex;
             align-items: center;
-            gap: 0.7rem;
-            padding: 0.58rem 1rem;
-            margin: 1px 0.6rem;
-            border-radius: 8px;
-            color: rgba(255,255,255,0.6);
+            gap: 12px;
+            padding: 0.7rem 0.8rem;
+            border-radius: var(--radius-sm);
+            color: var(--sidebar-text);
             text-decoration: none;
-            font-size: 0.845rem;
+            font-size: 0.85rem;
             font-weight: 500;
-            transition: background 0.15s, color 0.15s;
-            position: relative;
+            transition: all 0.2s;
+            margin-bottom: 2px;
         }
 
-        .menu-item:hover  { background: rgba(255,255,255,0.07); color: rgba(255,255,255,0.9); }
-        .menu-item.active { background: rgba(255,255,255,0.15); color: #fff; font-weight: 600; }
-        .menu-item.active::before {
-            content: '';
-            position: absolute;
-            left: -0.6rem; top: 50%;
-            transform: translateY(-50%);
-            width: 3px; height: 20px;
-            background: #fff;
-            border-radius: 0 3px 3px 0;
+        .menu-item:hover {
+            background: var(--sidebar-active-bg);
+            color: var(--sidebar-text-hover);
         }
 
-        .menu-icon { font-size: 0.95rem; width: 18px; text-align: center; flex-shrink: 0; }
+        .menu-item.active {
+            background: var(--sidebar-active-bg);
+            color: var(--sidebar-active-color);
+            border-left: 2px solid white;
+        }
+
+        .menu-icon {
+            font-size: 1.1rem;
+            width: 24px;
+        }
+
         .menu-badge {
             margin-left: auto;
-            background: var(--red);
-            color: #fff;
-            font-size: 0.6rem;
-            font-weight: 800;
-            padding: 1px 6px;
-            border-radius: 8px;
-            min-width: 18px;
-            text-align: center;
+            background: rgba(255,255,255,0.25);
+            color: white;
+            font-size: 0.65rem;
+            font-weight: 700;
+            padding: 2px 8px;
+            border-radius: 20px;
         }
-        .menu-badge.yellow { background: var(--yellow); }
 
-        /* ── Main content ──────────────────────────────── */
-        .main { margin-left: var(--sidebar); flex: 1; padding: 1.8rem 2rem; min-width: 0; }
+        .menu-badge.yellow { background: var(--yellow); color: #1a1a2e; }
 
-        /* ── Topbar ───────────────────────────────────── */
-        .topbar {
+        .sidebar-footer {
+            padding: 1rem 0.8rem;
+            border-top: 1px solid var(--sidebar-border);
+            margin-top: auto;
+        }
+
+        .sidebar-footer a {
             display: flex;
             align-items: center;
+            gap: 10px;
+            padding: 0.7rem 0.8rem;
+            color: var(--sidebar-text);
+            text-decoration: none;
+            border-radius: var(--radius-sm);
+            transition: all 0.2s;
+        }
+
+        .sidebar-footer a:hover {
+            background: var(--sidebar-active-bg);
+            color: var(--red);
+        }
+
+        /* ========== MAIN CONTENT ========== */
+        .main {
+            margin-left: var(--sidebar-width);
+            padding: 1.5rem 2rem;
+            min-height: 100vh;
+            flex: 1;
+        }
+
+        /* Topbar */
+        .topbar {
+            display: flex;
             justify-content: space-between;
-            margin-bottom: 1.6rem;
+            align-items: center;
+            margin-bottom: 2rem;
+            flex-wrap: wrap;
             gap: 1rem;
         }
+
         .topbar-left h1 {
-            font-size: 1.4rem;
-            font-weight: 800;
+            font-family: 'Sora', sans-serif;
+            font-size: 1.6rem;
+            font-weight: 700;
             color: var(--text);
-            letter-spacing: -0.3px;
+            margin-bottom: 0.2rem;
         }
+
         .topbar-left p {
-            font-size: 0.82rem;
-            color: var(--text-3);
-            margin-top: 1px;
+            color: var(--text-muted);
+            font-size: 0.85rem;
         }
+
         .topbar-right {
             display: flex;
             align-items: center;
-            gap: 0.75rem;
-        }
-        .admin-info {
-            font-size: 0.85rem;
-            background: var(--card);
-            padding: 0.4rem 0.9rem;
-            border-radius: 20px;
-            border: 1px solid var(--border);
-        }
-        .topbar-date {
-            font-size: 0.78rem;
-            color: var(--text-3);
-            background: var(--card);
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            padding: 0.4rem 0.85rem;
+            gap: 1rem;
         }
 
-        /* ── Stats Grid ───────────────────────────────── */
+        .admin-info, .topbar-date {
+            background: var(--surface);
+            padding: 0.5rem 1rem;
+            border-radius: var(--radius-sm);
+            font-size: 0.85rem;
+            border: 1px solid var(--border);
+        }
+
+        /* Stats Grid */
         .stats-grid {
             display: grid;
             grid-template-columns: repeat(4, 1fr);
             gap: 1rem;
-            margin-bottom: 1.4rem;
+            margin-bottom: 1.5rem;
         }
         .stat-card {
-            background: var(--card);
-            border-radius: 12px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
             padding: 1rem 1.1rem;
-            box-shadow: var(--shadow);
-            border: 1px solid var(--border-lt);
-            transition: box-shadow 0.2s, transform 0.2s;
+            transition: transform 0.2s;
         }
-        .stat-card:hover { box-shadow: var(--shadow-md); transform: translateY(-1px); }
-        .stat-num { font-size: 1.6rem; font-weight: 800; color: var(--text); line-height: 1; }
-        .stat-label { font-size: 0.72rem; color: var(--text-4); font-weight: 500; margin-top: 4px; text-transform: uppercase; letter-spacing: 0.04em; }
-        .stat-sub { font-size: 0.7rem; color: var(--text-3); margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--border-lt); }
+        .stat-card:hover { transform: translateY(-2px); border-color: var(--border-hv); }
+        .stat-num {
+            font-family: 'Sora', sans-serif;
+            font-size: 1.6rem;
+            font-weight: 800;
+            color: var(--text);
+            line-height: 1;
+        }
+        .stat-label {
+            font-size: 0.7rem;
+            font-weight: 600;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            margin-top: 4px;
+        }
+        .stat-sub {
+            font-size: 0.65rem;
+            color: var(--text-dim);
+            margin-top: 6px;
+            padding-top: 5px;
+            border-top: 1px solid var(--border);
+        }
 
-        /* ── Main Grid ────────────────────────────────── */
+        /* Main Grid */
         .grid-2 {
             display: grid;
             grid-template-columns: repeat(2, 1fr);
@@ -334,100 +404,122 @@ function e($v) { return htmlspecialchars($v ?? ''); }
             margin-bottom: 1.2rem;
         }
 
-        /* ── Cards ────────────────────────────────────── */
+        /* Cards */
         .card {
-            background: var(--card);
-            border-radius: 12px;
-            box-shadow: var(--shadow);
-            border: 1px solid var(--border-lt);
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
             overflow: hidden;
         }
         .card-header {
             padding: 0.9rem 1.2rem;
-            border-bottom: 1px solid var(--border-lt);
+            border-bottom: 1px solid var(--border);
             display: flex;
             align-items: center;
             justify-content: space-between;
         }
         .card-header h2 {
+            font-family: 'Sora', sans-serif;
             font-size: 0.9rem;
             font-weight: 700;
             color: var(--text);
         }
         .card-header .badge {
-            background: var(--blue-lt);
-            color: var(--blue);
+            background: var(--accent);
+            color: #fff;
             padding: 3px 10px;
             border-radius: 20px;
-            font-size: 0.7rem;
+            font-size: 0.65rem;
             font-weight: 600;
         }
         .card-body { padding: 1.2rem; }
 
-        /* Stats rows inside cards */
+        /* Stat Rows */
         .stat-row {
             display: flex;
             justify-content: space-between;
             align-items: center;
             padding: 0.6rem 0;
-            border-bottom: 1px solid var(--border-lt);
+            border-bottom: 1px solid var(--border);
         }
         .stat-row:last-child { border-bottom: none; }
         .stat-row .label {
             font-size: 0.8rem;
-            color: var(--text-2);
+            color: var(--text-muted);
             font-weight: 500;
         }
         .stat-row .value {
             font-weight: 700;
             color: var(--text);
-            font-size: 0.9rem;
+            font-size: 0.85rem;
         }
         .stat-row .small {
-            font-size: 0.7rem;
+            font-size: 0.65rem;
             font-weight: 400;
-            color: var(--text-4);
+            color: var(--text-dim);
             margin-left: 0.25rem;
         }
 
-        /* Progress bar */
+        /* Progress Bar */
         .progress-bar {
-            background: #e5e7eb;
+            background: var(--bg2);
             border-radius: 6px;
-            height: 8px;
+            height: 6px;
             margin-top: 0.5rem;
             overflow: hidden;
         }
         .progress-fill {
             height: 100%;
-            background: var(--blue);
+            background: var(--accent);
             border-radius: 6px;
             transition: width 0.3s;
         }
 
-        /* Monthly chart */
+        /* Revenue Highlight */
+        .revenue-highlight {
+            background: linear-gradient(135deg, var(--primary), var(--accent));
+            border-radius: var(--radius-lg);
+            padding: 1rem;
+            text-align: center;
+            margin-bottom: 1rem;
+        }
+        .revenue-highlight .amount {
+            font-family: 'Sora', sans-serif;
+            font-size: 1.8rem;
+            font-weight: 800;
+            color: white;
+        }
+        .revenue-highlight .label {
+            font-size: 0.65rem;
+            opacity: 0.8;
+            margin-top: 4px;
+            color: rgba(255,255,255,0.8);
+        }
+
+        /* Monthly Chart */
         .monthly-chart {
             display: flex;
             align-items: flex-end;
             gap: 0.4rem;
-            height: 160px;
+            height: 150px;
             margin-top: 1rem;
         }
         .month-bar {
             flex: 1;
-            background: var(--blue);
+            background: var(--accent);
             border-radius: 6px 6px 0 0;
             position: relative;
             transition: height 0.3s;
+            min-height: 4px;
         }
         .month-bar .count {
             position: absolute;
             top: -22px;
             left: 50%;
             transform: translateX(-50%);
-            font-size: 0.7rem;
+            font-size: 0.65rem;
             font-weight: 700;
-            color: var(--text-2);
+            color: var(--text);
         }
         .month-labels {
             display: flex;
@@ -438,93 +530,82 @@ function e($v) { return htmlspecialchars($v ?? ''); }
         .month-label {
             flex: 1;
             text-align: center;
-            font-size: 0.65rem;
-            color: var(--text-4);
+            font-size: 0.6rem;
+            color: var(--text-dim);
             font-weight: 600;
         }
 
         /* Table */
-        table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+        table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
         th {
             text-align: left;
-            padding: 0.6rem 1rem;
-            background: #fafafa;
-            color: var(--text-4);
+            padding: 0.75rem 1rem;
+            background: var(--bg2);
+            color: var(--text-dim);
             font-weight: 700;
             font-size: 0.68rem;
             text-transform: uppercase;
             letter-spacing: 0.06em;
-            border-bottom: 1px solid var(--border-lt);
+            border-bottom: 1px solid var(--border);
         }
         td {
             padding: 0.75rem 1rem;
-            border-bottom: 1px solid var(--border-lt);
-            color: var(--text-2);
+            border-bottom: 1px solid var(--border);
+            color: var(--text-muted);
             vertical-align: middle;
         }
-        tr:last-child td { border-bottom: none; }
-        tr:hover td { background: #fafbff; }
+        tr:hover td { background: var(--surface-hv); }
 
-        /* Badges */
-        .badge {
-            display: inline-flex;
+        /* Theme Toggle */
+        .theme-toggle {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            width: 42px;
+            height: 42px;
+            border-radius: 50%;
+            background: var(--surface);
+            backdrop-filter: blur(12px);
+            border: 1px solid var(--border);
+            display: flex;
             align-items: center;
-            gap: 4px;
-            padding: 3px 9px;
-            border-radius: 20px;
-            font-size: 0.68rem;
-            font-weight: 700;
+            justify-content: center;
+            cursor: pointer;
+            color: var(--text);
+            font-size: 1.1rem;
+            z-index: 99;
+            transition: transform 0.2s;
         }
-        .badge-green  { background: #d1fae5; color: #065f46; }
-        .badge-blue   { background: #dbeafe; color: #1e40af; }
-        .badge-purple { background: #ede9fe; color: #5b21b6; }
-        .badge-yellow { background: #fef3c7; color: #92400e; }
+        .theme-toggle:hover { transform: scale(1.1); background: var(--surface-hv); }
 
-        /* Revenue highlight */
-        .revenue-highlight {
-            background: linear-gradient(135deg, #1a56db 0%, #1a56db 100%);
-            border-radius: 12px;
-            padding: 1.2rem;
-            color: #fff;
-            margin-bottom: 1.2rem;
-            text-align: center;
-        }
-        .revenue-highlight .amount {
-            font-size: 2rem;
-            font-weight: 800;
-            letter-spacing: -1px;
-        }
-        .revenue-highlight .label {
-            font-size: 0.7rem;
-            opacity: 0.75;
-            margin-top: 4px;
-        }
-
-        /* Responsive */
-        @media (max-width: 900px) {
-            .sidebar { display: none; }
-            .main { margin-left: 0; padding: 1rem; }
+        @media (max-width: 1024px) {
             .stats-grid { grid-template-columns: repeat(2, 1fr); }
             .grid-2 { grid-template-columns: 1fr; }
         }
-        @media (max-width: 700px) {
-            .stats-grid { grid-template-columns: 1fr 1fr; }
+        @media (max-width: 768px) {
+            .sidebar { transform: translateX(-100%); }
+            .sidebar.open { transform: translateX(0); }
+            .main { margin-left: 0; padding: 1rem; }
+            .stats-grid { grid-template-columns: 1fr; }
         }
     </style>
 </head>
 <body>
 
-<!-- Sidebar (identical to dashboard) -->
-<aside class="sidebar">
+<!-- Sidebar -->
+<aside class="sidebar" id="sidebar">
     <div class="sidebar-brand">
         <div class="brand-logo">
-            <div class="brand-icon">📄</div>
-            <div class="brand-name">DocuGo</div>
+            <img id="sidebarLogo" src="../wlogo.png" alt="ADFC Logo">
+            <div class="brand-text">
+                <div class="brand-name">Asian Development<br>Foundation College</div>
+                <div class="brand-sub">DocuGo Admin Panel</div>
+            </div>
         </div>
-        <div class="brand-sub">Admin Panel</div>
     </div>
+
     <nav class="sidebar-menu">
-        <div class="menu-section">Main</div>
+        <div class="menu-section">MAIN</div>
         <a href="dashboard.php" class="menu-item">
             <span class="menu-icon">🏠</span> Dashboard
         </a>
@@ -540,7 +621,8 @@ function e($v) { return htmlspecialchars($v ?? ''); }
                 <span class="menu-badge"><?= $pendingAccs ?></span>
             <?php endif; ?>
         </a>
-        <div class="menu-section">Records</div>
+
+        <div class="menu-section">RECORDS</div>
         <a href="alumni.php" class="menu-item">
             <span class="menu-icon">🎓</span> Alumni
         </a>
@@ -550,17 +632,20 @@ function e($v) { return htmlspecialchars($v ?? ''); }
         <a href="reports.php" class="menu-item active">
             <span class="menu-icon">📈</span> Reports
         </a>
-        <div class="menu-section">Communication</div>
+
+        <div class="menu-section">COMMUNICATION</div>
         <a href="announcements.php" class="menu-item">
             <span class="menu-icon">📢</span> Announcements
         </a>
-        <div class="menu-section">Settings</div>
+
+        <div class="menu-section">SETTINGS</div>
         <a href="document_types.php" class="menu-item">
             <span class="menu-icon">⚙️</span> Document Types
         </a>
     </nav>
+
     <div class="sidebar-footer">
-        <a href="../logout.php">🚪 Logout</a>
+        <a href="../logout.php"><span class="menu-icon">🚪</span> Logout</a>
     </div>
 </aside>
 
@@ -569,16 +654,12 @@ function e($v) { return htmlspecialchars($v ?? ''); }
     <!-- Topbar -->
     <div class="topbar">
         <div class="topbar-left">
-            <h1>📈 Reports & Analytics</h1>
+            <h1><i class="fas fa-chart-line"></i> Reports & Analytics</h1>
             <p>Comprehensive overview of system performance and alumni outcomes.</p>
         </div>
         <div class="topbar-right">
-            <div class="admin-info">
-                <strong><?= e($_SESSION['user_name']) ?></strong>
-            </div>
-            <div class="topbar-date">
-                📅 <?= date('l, F j, Y') ?>
-            </div>
+            <div class="admin-info"><i class="fas fa-user-circle"></i> <strong><?= escape($_SESSION['user_name']) ?></strong></div>
+            <div class="topbar-date"><i class="fas fa-calendar-alt"></i> <?= date('l, F j, Y') ?></div>
         </div>
     </div>
 
@@ -587,22 +668,22 @@ function e($v) { return htmlspecialchars($v ?? ''); }
         <div class="stat-card">
             <div class="stat-num"><?= $totalRequests ?></div>
             <div class="stat-label">Total Requests</div>
-            <div class="stat-sub"><?= $releasedCount ?> completed</div>
+            <div class="stat-sub"><i class="fas fa-check-circle" style="color: var(--green);"></i> <?= $releasedCount ?> completed</div>
         </div>
         <div class="stat-card">
-            <div class="stat-num"><?= number_format($totalRevenue, 0) ?></div>
+            <div class="stat-num">₱<?= number_format($totalRevenue, 0) ?></div>
             <div class="stat-label">Total Revenue</div>
-            <div class="stat-sub">₱<?= number_format($totalRevenue, 2) ?> collected</div>
+            <div class="stat-sub"><i class="fas fa-peso-sign"></i> <?= number_format($totalRevenue, 2) ?> collected</div>
         </div>
         <div class="stat-card">
             <div class="stat-num"><?= $alumniCount ?></div>
             <div class="stat-label">Alumni</div>
-            <div class="stat-sub"><?= $tracerRate ?>% tracer response rate</div>
+            <div class="stat-sub"><i class="fas fa-chart-simple"></i> <?= $tracerRate ?>% tracer response rate</div>
         </div>
         <div class="stat-card">
             <div class="stat-num"><?= $completionRate ?>%</div>
             <div class="stat-label">Completion Rate</div>
-            <div class="stat-sub"><?= $releasedCount ?> released out of <?= $totalRequests ?></div>
+            <div class="stat-sub"><i class="fas fa-rocket"></i> <?= $releasedCount ?> released out of <?= $totalRequests ?></div>
         </div>
     </div>
 
@@ -611,22 +692,17 @@ function e($v) { return htmlspecialchars($v ?? ''); }
         <!-- Document Requests Overview -->
         <div class="card">
             <div class="card-header">
-                <h2>📄 Document Requests</h2>
+                <h2><i class="fas fa-file-alt"></i> Document Requests</h2>
                 <span class="badge"><?= $totalRequests ?> total</span>
             </div>
             <div class="card-body">
-                <?php foreach (['pending' => '⏳ Pending', 'approved' => '✓ Approved', 'processing' => '⚙ Processing', 'ready' => '📋 Ready', 'paid' => '💰 Paid', 'released' => '🎉 Released', 'cancelled' => '✕ Cancelled'] as $status => $label): ?>
+                <?php foreach (['pending' => '⏳ Pending', 'approved' => '✓ Approved', 'processing' => '⚙ Processing', 'ready' => '📋 Ready', 'released' => '🎉 Released', 'cancelled' => '✕ Cancelled'] as $status => $label): ?>
                     <?php $count = $requestsByStatus[$status] ?? 0; ?>
                     <div class="stat-row">
                         <span class="label"><?= $label ?></span>
-                        <div class="value">
-                            <?= $count ?>
-                            <span class="small">(<?= $totalRequests > 0 ? round(($count / $totalRequests) * 100, 1) : 0 ?>%)</span>
-                        </div>
+                        <div class="value"><?= $count ?> <span class="small">(<?= $totalRequests > 0 ? round(($count / $totalRequests) * 100, 1) : 0 ?>%)</span></div>
                     </div>
-                    <div class="progress-bar">
-                        <div class="progress-fill" style="width: <?= $totalRequests > 0 ? ($count / $totalRequests * 100) : 0 ?>%"></div>
-                    </div>
+                    <div class="progress-bar"><div class="progress-fill" style="width: <?= $totalRequests > 0 ? ($count / $totalRequests * 100) : 0 ?>%"></div></div>
                 <?php endforeach; ?>
             </div>
         </div>
@@ -634,7 +710,7 @@ function e($v) { return htmlspecialchars($v ?? ''); }
         <!-- User Accounts -->
         <div class="card">
             <div class="card-header">
-                <h2>👥 User Accounts</h2>
+                <h2><i class="fas fa-users"></i> User Accounts</h2>
                 <span class="badge">by role</span>
             </div>
             <div class="card-body">
@@ -646,13 +722,10 @@ function e($v) { return htmlspecialchars($v ?? ''); }
                 ?>
                     <div class="stat-row">
                         <span class="label"><?= $label ?></span>
-                        <div class="value">
-                            <?= $total ?>
-                            <span class="small">(<?= $active ?> active)</span>
-                        </div>
+                        <div class="value"><?= $total ?> <span class="small">(<?= $active ?> active)</span></div>
                     </div>
                 <?php endforeach; ?>
-                <div style="margin-top: 0.75rem; padding-top: 0.5rem; border-top: 1px solid var(--border-lt);">
+                <div style="margin-top: 0.75rem; padding-top: 0.5rem; border-top: 1px solid var(--border);">
                     <div class="stat-row">
                         <span class="label">⏳ Pending Approval</span>
                         <div class="value"><?= $pendingAccs ?></div>
@@ -664,10 +737,10 @@ function e($v) { return htmlspecialchars($v ?? ''); }
         <!-- Revenue & Payments -->
         <div class="card">
             <div class="card-header">
-                <h2>💰 Revenue Analytics</h2>
+                <h2><i class="fas fa-coins"></i> Revenue Analytics</h2>
             </div>
             <div class="card-body">
-                <div class="revenue-highlight" style="margin-bottom: 1rem;">
+                <div class="revenue-highlight">
                     <div class="amount">₱<?= number_format($totalRevenue, 2) ?></div>
                     <div class="label">Total Revenue Collected</div>
                 </div>
@@ -689,7 +762,7 @@ function e($v) { return htmlspecialchars($v ?? ''); }
         <!-- Alumni Engagement -->
         <div class="card">
             <div class="card-header">
-                <h2>🎓 Alumni Engagement</h2>
+                <h2><i class="fas fa-graduation-cap"></i> Alumni Engagement</h2>
             </div>
             <div class="card-body">
                 <div class="stat-row">
@@ -698,20 +771,12 @@ function e($v) { return htmlspecialchars($v ?? ''); }
                 </div>
                 <div class="stat-row">
                     <span class="label">Tracer Responses</span>
-                    <div class="value">
-                        <?= $tracerCount ?>
-                        <span class="small">(<?= $tracerRate ?>% response rate)</span>
-                    </div>
+                    <div class="value"><?= $tracerCount ?> <span class="small">(<?= $tracerRate ?>% response rate)</span></div>
                 </div>
-                <div class="progress-bar">
-                    <div class="progress-fill" style="width: <?= $tracerRate ?>%"></div>
-                </div>
+                <div class="progress-bar"><div class="progress-fill" style="width: <?= $tracerRate ?>%"></div></div>
                 <div class="stat-row" style="margin-top: 0.75rem;">
                     <span class="label">Employment Profiles</span>
-                    <div class="value">
-                        <?= $empCount ?>
-                        <span class="small">(avg <?= $avgEmp ?> entries/alumni)</span>
-                    </div>
+                    <div class="value"><?= $empCount ?> <span class="small">(avg <?= $avgEmp ?> entries/alumni)</span></div>
                 </div>
             </div>
         </div>
@@ -720,22 +785,17 @@ function e($v) { return htmlspecialchars($v ?? ''); }
     <!-- Monthly Trends -->
     <div class="card" style="margin-bottom: 1.2rem;">
         <div class="card-header">
-            <h2>📅 Monthly Request Trends</h2>
+            <h2><i class="fas fa-calendar-alt"></i> Monthly Request Trends</h2>
             <span class="badge">Last 12 months</span>
         </div>
         <div class="card-body">
-            <?php
-            $max = !empty($monthlyData) ? max($monthlyData) : 1;
-            $max = $max > 0 ? $max : 1;
-            ?>
+            <?php $max = !empty($monthlyData) ? max($monthlyData) : 1; $max = $max > 0 ? $max : 1; ?>
             <div class="monthly-chart">
                 <?php for ($i = 11; $i >= 0; $i--): ?>
                     <?php $date = date('Y-m', strtotime("-$i months")); ?>
                     <?php $count = $monthlyData[$date] ?? 0; ?>
                     <?php $height = $max > 0 ? max(8, ($count / $max) * 100) : 8; ?>
-                    <div class="month-bar" style="height: <?= $height ?>%;">
-                        <div class="count"><?= $count ?></div>
-                    </div>
+                    <div class="month-bar" style="height: <?= $height ?>%;"><div class="count"><?= $count ?></div></div>
                 <?php endfor; ?>
             </div>
             <div class="month-labels">
@@ -743,8 +803,8 @@ function e($v) { return htmlspecialchars($v ?? ''); }
                     <div class="month-label"><?= date('M', strtotime("-$i months")) ?></div>
                 <?php endfor; ?>
             </div>
-            <div style="margin-top: 1rem; text-align: center; font-size: 0.7rem; color: var(--text-4);">
-                Peak month: <?= !empty($monthlyData) ? max($monthlyData) : 0 ?> requests
+            <div style="margin-top: 1rem; text-align: center; font-size: 0.7rem; color: var(--text-dim);">
+                <i class="fas fa-chart-line"></i> Peak month: <?= !empty($monthlyData) ? max($monthlyData) : 0 ?> requests
             </div>
         </div>
     </div>
@@ -752,30 +812,21 @@ function e($v) { return htmlspecialchars($v ?? ''); }
     <!-- Document Popularity -->
     <div class="card">
         <div class="card-header">
-            <h2>📋 Document Popularity</h2>
+            <h2><i class="fas fa-chart-bar"></i> Document Popularity</h2>
             <span class="badge">Most requested</span>
         </div>
         <div style="overflow-x: auto;">
             <table>
                 <thead>
-                    <tr>
-                        <th>Document Type</th>
-                        <th>Total Requests</th>
-                        <th>Popularity</th>
-                    </tr>
+                    <tr><th>Document Type</th><th>Total Requests</th><th>Popularity</th></tr>
                 </thead>
                 <tbody>
                     <?php foreach ($docs as $doc): ?>
                         <?php $percent = $totalRequests > 0 ? round(($doc['requests'] / $totalRequests) * 100, 1) : 0; ?>
                         <tr>
-                            <td><strong><?= e($doc['name']) ?></strong></td>
+                            <td><strong><?= escape($doc['name']) ?></strong></td>
                             <td><?= $doc['requests'] ?></td>
-                            <td>
-                                <div class="progress-bar" style="width: 120px;">
-                                    <div class="progress-fill" style="width: <?= min(100, $percent * 2) ?>%"></div>
-                                </div>
-                                <span style="font-size: 0.7rem; margin-left: 0.5rem; color: var(--text-4);"><?= $percent ?>%</span>
-                            </td>
+                            <td><div style="display: flex; align-items: center; gap: 0.5rem;"><div class="progress-bar" style="width: 100px;"><div class="progress-fill" style="width: <?= min(100, $percent * 2) ?>%"></div></div><span style="font-size: 0.7rem; color: var(--text-dim);"><?= $percent ?>%</span></div></td>
                         </tr>
                     <?php endforeach; ?>
                 </tbody>
@@ -783,6 +834,35 @@ function e($v) { return htmlspecialchars($v ?? ''); }
         </div>
     </div>
 </main>
+
+<!-- Theme Toggle -->
+<div class="theme-toggle" id="themeToggleBtn">
+    <i class="fas fa-moon"></i>
+</div>
+
+<script>
+// Theme Toggle
+const applyLogoForTheme = (isLight) => {
+    const logoImg = document.getElementById('sidebarLogo');
+    if (logoImg) logoImg.src = isLight ? '../wlogo.png' : '../wlogo.png';
+};
+const savedTheme = localStorage.getItem('docugoTheme');
+const isLightOnLoad = savedTheme === 'light';
+if (isLightOnLoad) {
+    document.body.classList.add('light');
+    document.getElementById('themeToggleBtn').innerHTML = '<i class="fas fa-sun"></i>';
+} else {
+    document.body.classList.remove('light');
+    document.getElementById('themeToggleBtn').innerHTML = '<i class="fas fa-moon"></i>';
+}
+applyLogoForTheme(isLightOnLoad);
+document.getElementById('themeToggleBtn').addEventListener('click', () => {
+    const isLight = document.body.classList.toggle('light');
+    localStorage.setItem('docugoTheme', isLight ? 'light' : 'dark');
+    document.getElementById('themeToggleBtn').innerHTML = isLight ? '<i class="fas fa-sun"></i>' : '<i class="fas fa-moon"></i>';
+    applyLogoForTheme(isLight);
+});
+</script>
 
 </body>
 </html>

@@ -58,6 +58,21 @@ if (isset($_POST['delete_all_read'])) {
     exit();
 }
 
+// AJAX handlers for real-time updates
+if (isset($_GET['ajax_unread_count'])) {
+    $s = $conn->prepare("SELECT COUNT(*) AS c FROM notifications WHERE user_id=? AND is_read=0");
+    $s->bind_param("i", $userId); $s->execute();
+    echo json_encode(['count' => (int)$s->get_result()->fetch_assoc()['c']]);
+    $s->close(); exit();
+}
+if (isset($_GET['ajax_notif_list'])) {
+    $s = $conn->prepare("SELECT id, message, is_read, created_at FROM notifications WHERE user_id=? ORDER BY created_at DESC LIMIT 10");
+    $s->bind_param("i", $userId);
+    $s->execute();
+    echo json_encode($s->get_result()->fetch_all(MYSQLI_ASSOC));
+    $s->close(); exit();
+}
+
 // Pagination settings
 $page = isset($_GET['page']) ? max(1, intval($_GET['page'])) : 1;
 $perPage = 20;
@@ -168,140 +183,315 @@ $initial = strtoupper(substr($user['first_name'], 0, 1));
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Notifications — DocuGo</title>
+    <title>Notifications — ADFC DocuGo</title>
+    <link href="https://fonts.googleapis.com/css2?family=Sora:wght@300;400;600;700;800&family=DM+Sans:ital,wght@0,300;0,400;0,500;1,300&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
     <style>
-        /* ─── Reset & Base ────────────────────────────── */
-        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+        /* ========== THEME VARIABLES ========== */
+        :root {
+            --primary:    #1a3ec7;
+            --primary-dk: #1230a0;
+            --accent:     #3b6bff;
+            --accent2:    #6b9fff;
+            --bg:         #080e28;
+            --bg2:        #0b1535;
+            --surface:    rgba(255,255,255,0.05);
+            --surface-hv: rgba(255,255,255,0.08);
+            --border:     rgba(255,255,255,0.08);
+            --border-hv:  rgba(59,107,255,0.25);
+            --text:       #dce6f8;
+            --text-muted: #7a96c4;
+            --text-dim:   #4a6190;
+            --green:      #4cd98a;
+            --gold:       #ffd700;
+            --purple:     #a78bfa;
+            --red:        #f87171;
+            --blue:       #60a5fa;
+            --radius-sm:  8px;
+            --radius-md:  12px;
+            --radius-lg:  16px;
+            --radius-xl:  24px;
+            --sidebar-width: 260px;
+            --ease-out:   cubic-bezier(0.16, 1, 0.3, 1);
+            --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+            
+            --sidebar-bg: #0f2a6b;
+            --sidebar-border: rgba(255,255,255,0.1);
+            --sidebar-text: #b8c9f0;
+            --sidebar-text-hover: #ffffff;
+            --sidebar-active-bg: rgba(59,107,255,0.25);
+            --sidebar-active-color: #ffffff;
+            --sidebar-section: #8eabff;
+        }
+
+        body.light {
+            --bg:         #eef2ff;
+            --bg2:        #e2e9ff;
+            --bg3:        #d8e2ff;
+            --surface:    rgba(255,255,255,0.6);
+            --surface-hv: rgba(255,255,255,0.85);
+            --border:     rgba(26,62,199,0.1);
+            --border-hv:  rgba(26,62,199,0.25);
+            --text:       #0c1836;
+            --text-muted: #3d5a92;
+            --text-dim:   #7a96c4;
+            
+            --sidebar-bg: #2d4ed6;
+            --sidebar-border: rgba(255,255,255,0.15);
+            --sidebar-text: #e0e8ff;
+            --sidebar-text-hover: #ffffff;
+            --sidebar-active-bg: rgba(255,255,255,0.2);
+            --sidebar-active-color: #ffffff;
+            --sidebar-section: #c7d5ff;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
 
         body {
-            font-family: 'Segoe UI', Arial, sans-serif;
-            background: #f0f4f8;
-            color: #111827;
-            min-height: 100vh;
+            font-family: 'DM Sans', sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            transition: background 0.3s, color 0.3s;
+            overflow-x: hidden;
             display: flex;
-            font-size: 14px;
-            line-height: 1.5;
         }
 
-        /* ─── Sidebar ─────────────────────────────────── */
+        /* ========== SIDEBAR ========== */
         .sidebar {
-            width: 220px;
-            background: #1a56db;
-            color: #fff;
-            min-height: 100vh;
-            flex-shrink: 0;
+            position: fixed;
+            left: 0;
+            top: 0;
+            width: var(--sidebar-width);
+            height: 100vh;
+            background: var(--sidebar-bg);
+            border-right: 1px solid var(--sidebar-border);
             display: flex;
             flex-direction: column;
-            position: fixed;
-            top: 0; left: 0; height: 100%;
             z-index: 100;
+            transition: transform 0.3s var(--ease-out), background 0.3s;
         }
+
         .sidebar-brand {
-            padding: 1.4rem 1.2rem;
-            font-size: 1.5rem;
+            padding: 1.5rem 1.2rem;
+            border-bottom: 1px solid var(--sidebar-border);
+            margin-bottom: 1rem;
+        }
+
+        .brand-logo {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .brand-logo img {
+            width: 48px;
+            height: 48px;
+            object-fit: contain;
+            border-radius: 12px;
+            transition: transform 0.3s var(--ease-spring);
+        }
+
+        .brand-logo img:hover {
+            transform: rotate(-5deg) scale(1.05);
+        }
+
+        .brand-text {
+            flex: 1;
+        }
+
+        .brand-name {
+            font-family: 'Sora', sans-serif;
             font-weight: 800;
-            border-bottom: 1px solid rgba(255,255,255,0.15);
-            letter-spacing: -0.5px;
+            font-size: 0.9rem;
+            color: white;
             line-height: 1.2;
         }
-        .sidebar-brand small {
-            display: block;
-            font-size: 0.68rem;
-            font-weight: 400;
-            opacity: 0.7;
+
+        .brand-sub {
+            font-size: 0.55rem;
+            color: rgba(255,255,255,0.7);
             margin-top: 3px;
-            text-transform: uppercase;
-            letter-spacing: 0.06em;
+            letter-spacing: 0.3px;
         }
-        .sidebar-menu { padding: 1rem 0; flex: 1; overflow-y: auto; }
-        .menu-label {
+
+        .sidebar-menu {
+            flex: 1;
+            padding: 0 0.8rem;
+        }
+
+        .menu-section {
             font-size: 0.65rem;
             font-weight: 700;
             text-transform: uppercase;
-            letter-spacing: 0.1em;
-            opacity: 0.5;
-            padding: 0.8rem 1.2rem 0.3rem;
+            letter-spacing: 1px;
+            color: var(--sidebar-section);
+            padding: 0.8rem 0.8rem 0.5rem;
         }
+
         .menu-item {
             display: flex;
             align-items: center;
-            gap: 0.65rem;
-            padding: 0.6rem 1.2rem;
-            color: rgba(255,255,255,0.82);
+            gap: 12px;
+            padding: 0.7rem 0.8rem;
+            border-radius: var(--radius-sm);
+            color: var(--sidebar-text);
             text-decoration: none;
-            font-size: 0.855rem;
+            font-size: 0.85rem;
             font-weight: 500;
-            transition: background 0.15s, color 0.15s;
-            border-left: 3px solid transparent;
+            transition: all 0.2s;
+            margin-bottom: 2px;
         }
-        .menu-item:hover { background: rgba(255,255,255,0.1); color: #fff; }
+
+        .menu-item:hover {
+            background: var(--sidebar-active-bg);
+            color: var(--sidebar-text-hover);
+        }
+
         .menu-item.active {
-            background: rgba(255,255,255,0.15);
-            color: #fff;
-            border-left-color: #fff;
-            font-weight: 600;
+            background: var(--sidebar-active-bg);
+            color: var(--sidebar-active-color);
+            border-left: 2px solid white;
         }
-        .menu-item .icon { font-size: 1rem; width: 20px; text-align: center; flex-shrink: 0; }
+
+        .menu-icon {
+            font-size: 1.1rem;
+            width: 24px;
+        }
+
+        .menu-badge {
+            margin-left: auto;
+            background: rgba(255,255,255,0.25);
+            color: white;
+            font-size: 0.65rem;
+            font-weight: 700;
+            padding: 2px 8px;
+            border-radius: 20px;
+        }
+
+        .menu-badge.yellow { background: var(--gold); color: #1a1a2e; }
+
         .sidebar-footer {
-            padding: 1rem 1.2rem;
-            border-top: 1px solid rgba(255,255,255,0.15);
-            font-size: 0.8rem;
+            padding: 1rem 0.8rem;
+            border-top: 1px solid var(--sidebar-border);
+            margin-top: auto;
         }
+
         .sidebar-footer a {
-            color: rgba(255,255,255,0.82);
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 0.7rem 0.8rem;
+            color: var(--sidebar-text);
             text-decoration: none;
-            display: flex; align-items: center; gap: 0.5rem;
-            transition: color 0.15s;
+            border-radius: var(--radius-sm);
+            transition: all 0.2s;
         }
-        .sidebar-footer a:hover { color: #fff; }
 
-        /* ─── Main ────────────────────────────────────── */
-        .main { margin-left: 220px; flex: 1; padding: 2rem; min-width: 0; }
+        .sidebar-footer a:hover {
+            background: var(--sidebar-active-bg);
+            color: var(--red);
+        }
 
-        /* ─── Topbar ──────────────────────────────────── */
+        /* ========== MAIN CONTENT ========== */
+        .main {
+            margin-left: var(--sidebar-width);
+            padding: 1.5rem 2rem;
+            min-height: 100vh;
+            flex: 1;
+        }
+
+        /* Topbar */
         .topbar {
             display: flex;
             align-items: center;
             justify-content: space-between;
             margin-bottom: 1.6rem;
             gap: 1rem;
+            flex-wrap: wrap;
         }
-        .topbar h1 { font-size: 1.35rem; font-weight: 800; color: #111827; }
-        .topbar-right { display: flex; align-items: center; gap: 0.65rem; flex-shrink: 0; }
 
-        /* ─── User Chip ───────────────────────────────── */
+        .topbar h1 {
+            font-family: 'Sora', sans-serif;
+            font-size: 1.35rem;
+            font-weight: 800;
+            color: var(--text);
+        }
+
+        .topbar-right {
+            display: flex;
+            align-items: center;
+            gap: 0.65rem;
+            flex-shrink: 0;
+        }
+
+        /* User Chip */
         .user-chip {
             display: flex;
             align-items: center;
             gap: 0.5rem;
-            background: #fff;
-            border: 1px solid #e5e7eb;
+            background: var(--surface);
+            border: 1px solid var(--border);
             border-radius: 20px;
-            padding: 0.38rem 0.85rem 0.38rem 0.45rem;
-            font-size: 0.82rem;
-            color: #374151;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.06);
-            white-space: nowrap;
+            padding: 0.35rem 0.85rem 0.35rem 0.45rem;
+            font-size: 0.8rem;
+            color: var(--text);
         }
         .chip-avatar {
-            width: 26px;
-            height: 26px;
+            width: 28px;
+            height: 28px;
             border-radius: 50%;
-            background: #1a56db;
+            background: var(--accent);
             color: #fff;
             display: flex;
             align-items: center;
             justify-content: center;
             font-size: 0.75rem;
             font-weight: 800;
-            flex-shrink: 0;
         }
-        .user-chip strong { color: #111827; font-weight: 700; }
 
-        /* ─── Filter Bar ──────────────────────────────── */
+        /* Logout Button */
+        .logout-btn-top {
+            width: 38px;
+            height: 38px;
+            border-radius: 50%;
+            background: rgba(248,113,113,0.15);
+            color: var(--red);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            text-decoration: none;
+            font-size: 1rem;
+            transition: transform 0.2s;
+        }
+        .logout-btn-top:hover { transform: scale(1.05); background: rgba(248,113,113,0.25); }
+
+        /* Theme Toggle */
+        .theme-toggle {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            width: 42px;
+            height: 42px;
+            border-radius: 50%;
+            background: var(--surface);
+            backdrop-filter: blur(12px);
+            border: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            color: var(--text);
+            font-size: 1.1rem;
+            z-index: 99;
+            transition: transform 0.2s;
+        }
+        .theme-toggle:hover { transform: scale(1.1); background: var(--surface-hv); }
+
+        /* Filter Bar */
         .filter-bar {
-            background: #fff;
-            border-radius: 12px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
             padding: 0.75rem 1.2rem;
             margin-bottom: 1.5rem;
             display: flex;
@@ -309,7 +499,6 @@ $initial = strtoupper(substr($user['first_name'], 0, 1));
             justify-content: space-between;
             flex-wrap: wrap;
             gap: 1rem;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.06);
         }
         .filter-tabs {
             display: flex;
@@ -320,17 +509,18 @@ $initial = strtoupper(substr($user['first_name'], 0, 1));
             padding: 0.4rem 1rem;
             border-radius: 20px;
             text-decoration: none;
-            font-size: 0.8rem;
+            font-size: 0.75rem;
             font-weight: 600;
             transition: all 0.15s;
-            background: #f3f4f6;
-            color: #374151;
+            background: var(--bg2);
+            color: var(--text-muted);
         }
         .filter-btn:hover {
-            background: #e5e7eb;
+            background: var(--surface-hv);
+            color: var(--text);
         }
         .filter-btn.active {
-            background: #1a56db;
+            background: linear-gradient(135deg, var(--primary), var(--accent));
             color: #fff;
         }
         .action-buttons {
@@ -339,56 +529,61 @@ $initial = strtoupper(substr($user['first_name'], 0, 1));
         }
         .action-btn {
             padding: 0.4rem 1rem;
-            border-radius: 8px;
+            border-radius: var(--radius-sm);
             text-decoration: none;
-            font-size: 0.75rem;
+            font-size: 0.7rem;
             font-weight: 600;
             border: none;
             cursor: pointer;
             transition: all 0.15s;
-            background: #f3f4f6;
-            color: #374151;
+            background: var(--bg2);
+            color: var(--text-muted);
         }
         .action-btn:hover {
-            background: #e5e7eb;
+            background: var(--surface-hv);
+            color: var(--text);
         }
         .action-btn-danger {
-            background: #fee2e2;
-            color: #dc2626;
+            background: rgba(248,113,113,0.15);
+            color: var(--red);
         }
         .action-btn-danger:hover {
-            background: #fecaca;
+            background: rgba(248,113,113,0.25);
+            color: var(--red);
         }
 
-        /* ─── Notifications List ──────────────────────── */
+        /* Notifications Container */
         .notifications-container {
-            background: #fff;
-            border-radius: 12px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
             overflow: hidden;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.06);
         }
         .notif-item {
             display: flex;
             align-items: flex-start;
             gap: 1rem;
-            padding: 1.2rem 1.5rem;
-            border-bottom: 1px solid #f3f4f6;
+            padding: 1rem 1.5rem;
+            border-bottom: 1px solid var(--border);
             transition: background 0.15s;
             position: relative;
         }
+        .notif-item:last-child {
+            border-bottom: none;
+        }
         .notif-item.unread {
-            background: #f0f7ff;
+            background: rgba(59,107,255,0.08);
         }
         .notif-item.unread:hover {
-            background: #e0edff;
+            background: rgba(59,107,255,0.12);
         }
         .notif-item:hover {
-            background: #f9fafb;
+            background: var(--surface-hv);
         }
         .notif-icon {
             width: 44px;
             height: 44px;
-            border-radius: 12px;
+            border-radius: var(--radius-md);
             display: flex;
             align-items: center;
             justify-content: center;
@@ -400,8 +595,8 @@ $initial = strtoupper(substr($user['first_name'], 0, 1));
             min-width: 0;
         }
         .notif-message {
-            font-size: 0.9rem;
-            color: #1f2937;
+            font-size: 0.85rem;
+            color: var(--text);
             line-height: 1.5;
             margin-bottom: 0.25rem;
         }
@@ -409,8 +604,8 @@ $initial = strtoupper(substr($user['first_name'], 0, 1));
             font-weight: 600;
         }
         .notif-time {
-            font-size: 0.7rem;
-            color: #9ca3af;
+            font-size: 0.65rem;
+            color: var(--text-dim);
             display: flex;
             align-items: center;
             gap: 0.3rem;
@@ -425,26 +620,29 @@ $initial = strtoupper(substr($user['first_name'], 0, 1));
             background: none;
             border: none;
             cursor: pointer;
-            font-size: 1rem;
+            font-size: 0.9rem;
             padding: 0.3rem;
-            border-radius: 6px;
+            border-radius: var(--radius-sm);
             transition: background 0.15s;
             width: 30px;
             height: 30px;
             display: flex;
             align-items: center;
             justify-content: center;
+            color: var(--text-muted);
         }
         .mark-read-btn:hover {
-            background: #e5e7eb;
+            background: var(--surface-hv);
+            color: var(--green);
         }
         .delete-btn:hover {
-            background: #fee2e2;
+            background: rgba(248,113,113,0.15);
+            color: var(--red);
         }
         .unread-dot {
             width: 8px;
             height: 8px;
-            background: #1a56db;
+            background: var(--accent);
             border-radius: 50%;
             position: absolute;
             left: 1rem;
@@ -452,58 +650,65 @@ $initial = strtoupper(substr($user['first_name'], 0, 1));
             transform: translateY(-50%);
         }
 
-        /* ─── Empty State ─────────────────────────────── */
+        /* Empty State */
         .empty-state {
             text-align: center;
             padding: 4rem 2rem;
         }
         .empty-icon {
-            font-size: 4rem;
+            font-size: 3rem;
             margin-bottom: 1rem;
             opacity: 0.5;
+            color: var(--text-dim);
         }
         .empty-state h3 {
-            color: #374151;
+            font-family: 'Sora', sans-serif;
+            font-size: 1rem;
+            color: var(--text);
             margin-bottom: 0.5rem;
         }
         .empty-state p {
-            color: #9ca3af;
+            font-size: 0.8rem;
+            color: var(--text-dim);
         }
 
-        /* ─── Pagination ──────────────────────────────── */
+        /* Pagination */
         .pagination {
             display: flex;
             justify-content: center;
             gap: 0.3rem;
-            padding: 1.5rem;
-            border-top: 1px solid #f3f4f6;
+            padding: 1rem;
+            border-top: 1px solid var(--border);
             flex-wrap: wrap;
         }
         .page-link {
-            padding: 0.5rem 0.9rem;
-            border-radius: 8px;
+            padding: 0.4rem 0.8rem;
+            border-radius: var(--radius-sm);
             text-decoration: none;
-            font-size: 0.85rem;
+            font-size: 0.75rem;
             font-weight: 500;
             transition: all 0.15s;
-            color: #374151;
-            background: #f3f4f6;
+            color: var(--text-muted);
+            background: var(--surface);
+            border: 1px solid var(--border);
         }
         .page-link:hover {
-            background: #e5e7eb;
+            background: var(--surface-hv);
+            border-color: var(--accent);
         }
         .page-link.active {
-            background: #1a56db;
+            background: linear-gradient(135deg, var(--primary), var(--accent));
             color: #fff;
+            border-color: transparent;
         }
         .page-link.disabled {
             opacity: 0.4;
             pointer-events: none;
         }
 
-        /* ─── Responsive ──────────────────────────────── */
         @media (max-width: 900px) {
-            .sidebar { display: none; }
+            .sidebar { transform: translateX(-100%); }
+            .sidebar.open { transform: translateX(0); }
             .main { margin-left: 0; padding: 1rem; }
             .notif-item { flex-direction: column; }
             .notif-actions { align-self: flex-end; }
@@ -514,38 +719,45 @@ $initial = strtoupper(substr($user['first_name'], 0, 1));
 </head>
 <body>
 
-<!-- ─── Sidebar ─────────────────────────────────────────── -->
-<aside class="sidebar">
+<!-- Sidebar -->
+<aside class="sidebar" id="sidebar">
     <div class="sidebar-brand">
-        DocuGo
-        <small><?= $isAlumni ? 'Alumni Portal' : 'Student Portal' ?></small>
+        <div class="brand-logo">
+            <img id="sidebarLogo" src="../wlogo.png" alt="ADFC Logo">
+            <div class="brand-text">
+                <div class="brand-name">Asian Development<br>Foundation College</div>
+                <div class="brand-sub"><?= $isAlumni ? 'Alumni Portal' : 'Student Portal' ?></div>
+            </div>
+        </div>
     </div>
+
     <nav class="sidebar-menu">
-        <div class="menu-label">Main</div>
-        <a href="dashboard.php" class="menu-item"><span class="icon">🏠</span> Dashboard</a>
-        <a href="request_form.php" class="menu-item"><span class="icon">📄</span> Request Document</a>
-        <a href="my_requests.php" class="menu-item"><span class="icon">📋</span> My Requests</a>
-        <a href="notifications.php" class="menu-item active"><span class="icon">🔔</span> Notifications</a>
+        <div class="menu-section">MAIN</div>
+        <a href="dashboard.php" class="menu-item"><span class="menu-icon">🏠</span> Dashboard</a>
+        <a href="request_form.php" class="menu-item"><span class="menu-icon">📄</span> Request Document</a>
+        <a href="my_requests.php" class="menu-item"><span class="menu-icon">📋</span> My Requests</a>
+        <a href="notifications.php" class="menu-item active"><span class="menu-icon">🔔</span> Notifications</a>
         
         <?php if ($isAlumni): ?>
-        <div class="menu-label">Alumni</div>
-        <a href="graduate_tracer.php" class="menu-item"><span class="icon">📊</span> Graduate Tracer</a>
-        <a href="employment_profile.php" class="menu-item"><span class="icon">💼</span> Employment Profile</a>
-        <a href="alumni_documents.php" class="menu-item"><span class="icon">🎓</span> Alumni Documents</a>
+        <div class="menu-section">ALUMNI</div>
+        <a href="graduate_tracer.php" class="menu-item"><span class="menu-icon">📊</span> Graduate Tracer</a>
+        <a href="employment_profile.php" class="menu-item"><span class="menu-icon">💼</span> Employment Profile</a>
+        <a href="alumni_documents.php" class="menu-item"><span class="menu-icon">🎓</span> Alumni Documents</a>
         <?php endif; ?>
         
-        <div class="menu-label">Account</div>
-        <a href="profile.php" class="menu-item"><span class="icon">👤</span> Profile</a>
+        <div class="menu-section">ACCOUNT</div>
+        <a href="profile.php" class="menu-item"><span class="menu-icon">👤</span> Profile</a>
     </nav>
+
     <div class="sidebar-footer">
-        <a href="../logout.php">🚪 Logout</a>
+        <a href="../logout.php"><span class="menu-icon">🚪</span> Logout</a>
     </div>
 </aside>
 
-<!-- ─── Main ────────────────────────────────────────────── -->
+<!-- Main Content -->
 <main class="main">
     <div class="topbar">
-        <h1>🔔 Notifications</h1>
+        <h1><i class="fas fa-bell" style="color: var(--gold);"></i> Notifications</h1>
         <div class="topbar-right">
             <div class="user-chip">
                 <div class="chip-avatar"><?= $initial ?></div>
@@ -569,10 +781,10 @@ $initial = strtoupper(substr($user['first_name'], 0, 1));
         </div>
         <div class="action-buttons">
             <form method="POST" style="display: inline;" onsubmit="return confirm('Mark all notifications as read?')">
-                <button type="submit" name="mark_all_read" class="action-btn">✓ Mark all read</button>
+                <button type="submit" name="mark_all_read" class="action-btn"><i class="fas fa-check-double"></i> Mark all read</button>
             </form>
             <form method="POST" style="display: inline;" onsubmit="return confirm('Delete all read notifications? This action cannot be undone.')">
-                <button type="submit" name="delete_all_read" class="action-btn action-btn-danger">🗑 Delete all read</button>
+                <button type="submit" name="delete_all_read" class="action-btn action-btn-danger"><i class="fas fa-trash"></i> Delete all read</button>
             </form>
         </div>
     </div>
@@ -581,7 +793,7 @@ $initial = strtoupper(substr($user['first_name'], 0, 1));
     <div class="notifications-container">
         <?php if ($notifications->num_rows === 0): ?>
             <div class="empty-state">
-                <div class="empty-icon">🔔</div>
+                <div class="empty-icon"><i class="fas fa-bell-slash"></i></div>
                 <h3>No notifications yet</h3>
                 <p>When you receive notifications, they'll appear here.</p>
             </div>
@@ -604,7 +816,7 @@ $initial = strtoupper(substr($user['first_name'], 0, 1));
                             <?= htmlspecialchars($notif['message']) ?>
                         </div>
                         <div class="notif-time">
-                            🕐 <?= timeAgo($notif['created_at']) ?>
+                            <i class="far fa-clock"></i> <?= timeAgo($notif['created_at']) ?>
                         </div>
                     </div>
                     
@@ -613,14 +825,14 @@ $initial = strtoupper(substr($user['first_name'], 0, 1));
                             <form method="POST" style="display: inline;">
                                 <input type="hidden" name="notif_id" value="<?= $notif['id'] ?>">
                                 <button type="submit" name="mark_read" class="mark-read-btn" title="Mark as read">
-                                    ✓
+                                    <i class="fas fa-check"></i>
                                 </button>
                             </form>
                         <?php endif; ?>
                         <form method="POST" style="display: inline;" onsubmit="return confirm('Delete this notification?')">
                             <input type="hidden" name="notif_id" value="<?= $notif['id'] ?>">
                             <button type="submit" name="delete" value="<?= $notif['id'] ?>" class="delete-btn" title="Delete">
-                                🗑
+                                <i class="fas fa-trash"></i>
                             </button>
                         </form>
                     </div>
@@ -634,7 +846,7 @@ $initial = strtoupper(substr($user['first_name'], 0, 1));
         <div class="pagination">
             <a href="?page=<?= max(1, $page - 1) ?>&filter=<?= $filter ?>" 
                class="page-link <?= $page <= 1 ? 'disabled' : '' ?>">
-                ← Previous
+                <i class="fas fa-chevron-left"></i> Previous
             </a>
             
             <?php
@@ -666,11 +878,43 @@ $initial = strtoupper(substr($user['first_name'], 0, 1));
             
             <a href="?page=<?= min($totalPages, $page + 1) ?>&filter=<?= $filter ?>" 
                class="page-link <?= $page >= $totalPages ? 'disabled' : '' ?>">
-                Next →
+                Next <i class="fas fa-chevron-right"></i>
             </a>
         </div>
     <?php endif; ?>
 </main>
+
+<!-- Theme Toggle -->
+<div class="theme-toggle" id="themeToggleBtn">
+    <i class="fas fa-moon"></i>
+</div>
+
+<script>
+// Theme Toggle
+const applyLogoForTheme = (isLight) => {
+    const logoImg = document.getElementById('sidebarLogo');
+    if (logoImg) logoImg.src = isLight ? '../wlogo.png' : '../wlogo.png';
+};
+
+const savedTheme = localStorage.getItem('docugoTheme');
+const isLightOnLoad = savedTheme === 'light';
+
+if (isLightOnLoad) {
+    document.body.classList.add('light');
+    document.getElementById('themeToggleBtn').innerHTML = '<i class="fas fa-sun"></i>';
+} else {
+    document.body.classList.remove('light');
+    document.getElementById('themeToggleBtn').innerHTML = '<i class="fas fa-moon"></i>';
+}
+applyLogoForTheme(isLightOnLoad);
+
+document.getElementById('themeToggleBtn').addEventListener('click', () => {
+    const isLight = document.body.classList.toggle('light');
+    localStorage.setItem('docugoTheme', isLight ? 'light' : 'dark');
+    document.getElementById('themeToggleBtn').innerHTML = isLight ? '<i class="fas fa-sun"></i>' : '<i class="fas fa-moon"></i>';
+    applyLogoForTheme(isLight);
+});
+</script>
 
 </body>
 </html>
